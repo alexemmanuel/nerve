@@ -1,0 +1,6 @@
+{
+  "name": "Nerve — Native P2P Dev Work Surface & Incident Response API",
+  "description": "Nerve: A mutual-follow P2P developer messenger, mobile incident triage workbench, inline Codespaces pairing environment, and universal REST/SDK integration engine for GitHub, VS Code, Google Cloud, and Apple Xcode Cloud.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

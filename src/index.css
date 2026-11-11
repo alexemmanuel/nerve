@@ -1,0 +1,78 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background-color: #ffffff;
+    color: #000000;
+  }
+
+  html.dark,
+  .dark body {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+  }
+
+  html:not(.dark),
+  html:not(.dark) body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Enforce pure black background + white lettering in dark mode, and pure white background + black lettering in light mode */
+.dark .bg-slate-950,
+.dark .bg-slate-900,
+.dark .dark\:bg-slate-950,
+.dark .dark\:bg-slate-900,
+.dark .dark\:bg-slate-950\/70,
+.dark .dark\:bg-slate-950\/50,
+.dark .dark\:bg-slate-900\/50 {
+  background-color: #000000 !important;
+}
+
+.dark .text-slate-100,
+.dark .text-slate-200,
+.dark .text-slate-300,
+.dark .dark\:text-slate-100,
+.dark .dark\:text-slate-200,
+.dark .dark\:text-slate-300 {
+  color: #ffffff !important;
+}
+
+html:not(.dark) .bg-slate-50,
+html:not(.dark) .bg-slate-50\/40,
+html:not(.dark) .bg-slate-50\/70,
+html:not(.dark) .bg-slate-100,
+html:not(.dark) .bg-slate-100\/60,
+html:not(.dark) .bg-white {
+  background-color: #ffffff !important;
+}
+
+html:not(.dark) .text-slate-900,
+html:not(.dark) .text-slate-800,
+html:not(.dark) .text-slate-700,
+html:not(.dark) .text-slate-600 {
+  color: #000000 !important;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

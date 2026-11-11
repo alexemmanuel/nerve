@@ -1,0 +1,173 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Authenticated developer public profile linked with GitHub OAuth or Google Auth.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "githubHandle": {
+          "type": "string",
+          "description": "Verified GitHub username.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Developer display name.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "GitHub avatar URL.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "bio": {
+          "type": "string",
+          "description": "Developer bio or status.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "publicRepos": {
+          "type": "number",
+          "description": "Count of public GitHub repositories."
+        },
+        "followers": {
+          "type": "number",
+          "description": "Count of GitHub followers."
+        },
+        "following": {
+          "type": "number",
+          "description": "Count of GitHub accounts followed."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "uid",
+        "githubHandle",
+        "displayName",
+        "avatarUrl",
+        "publicRepos",
+        "followers",
+        "following",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GitHubPeerConnection": {
+      "title": "GitHubPeerConnection",
+      "description": "A real GitHub developer profile added to the user's mutual-follow P2P roster.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user who owns this peer entry.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "handle": {
+          "type": "string",
+          "description": "GitHub handle of the peer.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "name": {
+          "type": "string",
+          "description": "Real display name from GitHub profile.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "description": "Developer bio or role from GitHub.",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "organization": {
+          "type": "string",
+          "description": "GitHub company or organization.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "GitHub profile avatar URL.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "youFollowThem": {
+          "type": "boolean",
+          "description": "Whether the current user follows this GitHub peer."
+        },
+        "theyFollowYou": {
+          "type": "boolean",
+          "description": "Whether this GitHub peer follows the current user."
+        },
+        "proofOfWorkCommits": {
+          "type": "number",
+          "description": "Verified public repo / contribution score."
+        },
+        "focusModeOptOut": {
+          "type": "boolean",
+          "description": "Whether this peer has Focus Mode enabled."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when peer was added."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when peer was updated."
+        }
+      },
+      "required": [
+        "ownerId",
+        "handle",
+        "name",
+        "role",
+        "organization",
+        "avatarUrl",
+        "youFollowThem",
+        "theyFollowYou",
+        "proofOfWorkCommits",
+        "focusModeOptOut",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users_public/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserPublicProfile"
+      },
+      "description": "Public GitHub-linked developer profiles."
+    },
+    "/github_peers/{peerId}": {
+      "schema": {
+        "$ref": "#/entities/GitHubPeerConnection"
+      },
+      "description": "Real GitHub developer profiles synced to the authenticated user's Nerve workspace."
+    }
+  }
+}

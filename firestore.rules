@@ -1,0 +1,182 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Blueprint Validation Helpers
+    function isValidUserPublicProfile(data) {
+      return data.keys().hasAll([
+          'uid',
+          'githubHandle',
+          'displayName',
+          'avatarUrl',
+          'publicRepos',
+          'followers',
+          'following',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'githubHandle',
+          'displayName',
+          'avatarUrl',
+          'bio',
+          'publicRepos',
+          'followers',
+          'following',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == request.auth.uid
+        && data.githubHandle is string && data.githubHandle.size() >= 1 && data.githubHandle.size() <= 80
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.avatarUrl is string && data.avatarUrl.size() >= 1 && data.avatarUrl.size() <= 500
+        && (!('bio' in data) || (data.bio is string && data.bio.size() <= 300))
+        && data.publicRepos is int && data.publicRepos >= 0 && data.publicRepos <= 100000
+        && data.followers is int && data.followers >= 0 && data.followers <= 10000000
+        && data.following is int && data.following >= 0 && data.following <= 10000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidGitHubPeerConnection(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'handle',
+          'name',
+          'role',
+          'organization',
+          'avatarUrl',
+          'youFollowThem',
+          'theyFollowYou',
+          'proofOfWorkCommits',
+          'focusModeOptOut',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'handle',
+          'name',
+          'role',
+          'organization',
+          'avatarUrl',
+          'youFollowThem',
+          'theyFollowYou',
+          'proofOfWorkCommits',
+          'focusModeOptOut',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.handle is string && data.handle.size() >= 1 && data.handle.size() <= 80
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.role is string && data.role.size() >= 1 && data.role.size() <= 240
+        && data.organization is string && data.organization.size() >= 1 && data.organization.size() <= 120
+        && data.avatarUrl is string && data.avatarUrl.size() >= 1 && data.avatarUrl.size() <= 500
+        && data.youFollowThem is bool
+        && data.theyFollowYou is bool
+        && data.proofOfWorkCommits is int && data.proofOfWorkCommits >= 0 && data.proofOfWorkCommits <= 1000000
+        && data.focusModeOptOut is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection 1: /users_public/{userId}
+    match /users_public/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && existing().uid == request.auth.uid;
+      allow list: if isSignedIn() && existing().uid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && userId == request.auth.uid
+        && isValidUserPublicProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && userId == request.auth.uid
+        && isValidUserPublicProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'githubHandle',
+            'displayName',
+            'avatarUrl',
+            'bio',
+            'publicRepos',
+            'followers',
+            'following',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(userId) && userId == request.auth.uid && existing().uid == request.auth.uid;
+    }
+
+    // Collection 2: /github_peers/{peerId}
+    match /github_peers/{peerId} {
+      allow get: if isSignedIn() && isValidId(peerId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(peerId)
+        && isValidGitHubPeerConnection(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/users_public/$(request.auth.uid));
+
+      allow update: if isVerifiedUser()
+        && isValidId(peerId)
+        && isValidGitHubPeerConnection(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().handle == existing().handle
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/users_public/$(request.auth.uid))
+        && (
+          // Action 1: Toggle Mutual Follow or Focus Mode state
+          incoming().diff(existing()).affectedKeys().hasOnly(['youFollowThem', 'theyFollowYou', 'focusModeOptOut', 'updatedAt'])
+          ||
+          // Action 2: Refresh GitHub Profile Metadata
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'organization', 'avatarUrl', 'proofOfWorkCommits', 'youFollowThem', 'theyFollowYou', 'focusModeOptOut', 'updatedAt'])
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(peerId)
+        && existing().ownerId == request.auth.uid;
+    }
+  }
+}
