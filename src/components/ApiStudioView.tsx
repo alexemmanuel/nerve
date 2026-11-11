@@ -238,6 +238,44 @@ const API_ENDPOINTS: EndpointSpec[] = [
       read_only: false,
     },
   },
+  {
+    id: 'third_party_ssh',
+    label: '18. Third-Party Multi-Repo SSH Keys (GitLab, Bitbucket, Azure)',
+    path: '/api/v1/ssh-keys/third-party',
+    summary: 'Generate, register, and query Ed25519/RSA/ECDSA SSH keys and ~/.ssh/config host mappings for non-GitHub git repositories.',
+    defaultBody: {
+      provider: 'gitlab',
+      title: 'GitLab CI/CD Production Deploy Key',
+      keyType: 'ed25519',
+      host: 'gitlab.com',
+      publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq7pB3jK0wL8mN2oP4rS6tU8vW0xY2zA4bC6dE8fG0h ci-runner@gitlab.com',
+      purpose: 'both',
+    },
+  },
+  {
+    id: 'offline_flush',
+    label: '19. Offline Queue Auto-Flush Engine (Service Worker Sync)',
+    path: '/api/v1/offline/flush',
+    summary: 'Background sync and periodic polling engine that automatically flushes localStorage queued actions when network is restored.',
+    defaultBody: {
+      queue: [
+        {
+          id: 'off_act_demo_01',
+          type: 'bug_dispatch',
+          createdAt: new Date().toISOString(),
+          bugPayload: {
+            reporterHandle: 'primary-developer',
+            targetRepo: 'acme-cloud/edge-router',
+            branch: 'main',
+            filePath: 'src/proxy/stream-handler.ts',
+            lineNumber: 142,
+            summary: 'Stream crash on mobile disconnect during offline queue test',
+            stackTrace: 'Error: ERR_STREAM_WRITE_AFTER_END at stream-handler.ts:142',
+          },
+        },
+      ],
+    },
+  },
 ];
 
 interface ApiStudioViewProps {

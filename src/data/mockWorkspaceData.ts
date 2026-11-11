@@ -348,5 +348,40 @@ export async function authenticateWithGoogle() {
   return { addedKey: added.key, allKeys: allKeys.keys };
 }`,
   },
+  {
+    id: 'third-party-ssh-sdk',
+    platformName: 'Third-Party Multi-Repo SSH SDK',
+    category: 'Universal Git SSH Key Management',
+    targetUseCase: 'Generates, manages, and provisions Ed25519/RSA/ECDSA SSH keys for GitLab, Bitbucket, Azure DevOps, Gitea, and custom git hosts',
+    protocolEndpoint: 'GET /api/v1/ssh-keys/third-party · POST /api/v1/ssh-keys/third-party · DELETE /api/v1/ssh-keys/third-party/:id',
+    language: 'TypeScript',
+    architectureNotes: 'Outputs OpenSSH key pairs, generates ~/.ssh/config host mappings, and computes SHA256/MD5 fingerprints for non-GitHub git remotes.',
+    codeSnippet: `export async function provisionThirdPartySshKey(apiKey: string, provider: 'gitlab' | 'bitbucket' | 'azure_devops' | 'gitea' | 'custom', title: string, keyType: 'ed25519' | 'rsa' | 'ecdsa', publicKey: string) {
+  const res = await fetch("https://your-domain.com/api/v1/ssh-keys/third-party", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
+    body: JSON.stringify({ provider, title, keyType, publicKey, purpose: "both" }),
+  });
+  return await res.json();
+}`,
+  },
+  {
+    id: 'offline-sync-worker-sdk',
+    platformName: 'Background Service Worker & Offline Sync Engine',
+    category: 'Resilient Offline State & Queue Flusher',
+    targetUseCase: 'Service worker background sync with periodic polling to auto-flush localStorage queued actions the moment network is restored',
+    protocolEndpoint: 'POST /api/v1/offline/flush · navigator.serviceWorker · Background Sync API',
+    language: 'TypeScript',
+    architectureNotes: 'Listens for online transition and sync tags (nerve-flush-offline-queue), immediately flushes batch incidents/messages to backend with instant UI toast feedback.',
+    codeSnippet: `export async function triggerOfflineQueueSync(apiKey: string, queue: any[]) {
+  const res = await fetch("https://your-domain.com/api/v1/offline/flush", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
+    body: JSON.stringify({ queue }),
+  });
+  const data = await res.json();
+  return { flushedCount: data.flushedCount, success: data.success, timestamp: data.timestamp };
+}`,
+  },
 ];
 

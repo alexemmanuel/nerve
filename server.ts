@@ -2991,4 +2991,9 @@ async function startServer() {
   });
 }
 
-startServer();
+export { app, httpServer };
+export default app;
+
+if (!process.env.VERCEL && !process.env.VERCEL_ENV) {
+  startServer();
+}
