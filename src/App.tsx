@@ -45,6 +45,7 @@ import {
   RotateCcw,
   Smile,
   Download,
+  Globe,
 } from 'lucide-react';
 import {
   DeveloperPeer,
@@ -3627,17 +3628,24 @@ export default function App() {
           RESPONSIVE TOP BAR + MOBILE SLIDING NAVBAR DRAWER TRIGGER
       ===================================================================== */}
       <header className="flex items-center justify-between gap-2 px-3 sm:px-6 h-13 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black sticky top-0 z-30">
-        <a
-          href="#workspace"
+        <button
+          type="button"
           onClick={(e) => {
             e.preventDefault();
-            setActiveTab('workspace');
+            if (window.innerWidth < 768) {
+              setIsMobileMenuOpen((prev) => !prev);
+            } else {
+              setActiveTab('workspace');
+            }
           }}
-          className="text-base font-bold tracking-tight text-black dark:text-white whitespace-nowrap shrink-0 flex items-center gap-1.5"
+          aria-label="Nerve Work Surface navigation menu"
+          title="Nerve Navigation"
+          className="text-base font-bold tracking-tight text-black dark:text-white whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer group"
         >
-          <span className="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
+          <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></span>
           <span>Nerve</span>
-        </a>
+          <ChevronDown className="w-3.5 h-3.5 text-neutral-400 group-hover:text-black dark:group-hover:text-white md:hidden transition-transform" />
+        </button>
 
         {/* Desktop Center Navigation */}
         <nav className="hidden md:flex items-center gap-6 text-xs sm:text-sm font-medium text-black/70 dark:text-white/70">
@@ -3813,81 +3821,97 @@ export default function App() {
           MOBILE SLIDING NAVBAR DRAWER
       ===================================================================== */}
       {isMobileMenuOpen && (
-        <div className="fixed inset-0 z-50 md:hidden flex justify-end">
+        <div className="fixed inset-0 z-50 md:hidden">
+          {/* Backdrop with click to close */}
           <div
-            className="fixed inset-0 bg-black/60 backdrop-blur-xs"
+            className="fixed inset-0 bg-black/75 backdrop-blur-sm transition-opacity"
             onClick={() => setIsMobileMenuOpen(false)}
+            aria-label="Close navigation overlay"
           />
-          <aside className="relative z-10 w-64 max-w-[80vw] bg-white dark:bg-black text-black dark:text-white border-l border-neutral-200 dark:border-neutral-800 h-full p-4 flex flex-col justify-between shadow-2xl">
+
+          {/* Drawer Panel - fixed to right edge, high z-index, guaranteed height, clean contrast */}
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Nerve Navigation Menu"
+            className="fixed top-0 right-0 bottom-0 z-50 w-72 max-w-[85vw] h-screen h-dvh bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 border-l border-neutral-200 dark:border-neutral-800 p-4 flex flex-col justify-between shadow-2xl overflow-y-auto"
+          >
             <div className="space-y-4">
+              {/* Header */}
               <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-3">
-                <div className="flex items-center gap-1.5 font-bold text-sm">
-                  <span className="w-2 h-2 rounded-full bg-blue-600"></span>
-                  <span>Nerve Menu</span>
+                <div className="flex items-center gap-2 font-bold text-sm">
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
+                  <span className="tracking-tight font-sans">Nerve Menu</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setIsMobileMenuOpen(false)}
                   aria-label="Close navigation menu"
-                  className="p-1 rounded-lg text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                  className="p-1.5 rounded-lg text-neutral-500 hover:text-black dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer transition-colors"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               {/* Navigation Links */}
-              <div className="space-y-1">
-                {(['workspace', 'incidents', 'integration'] as const).map((tabKey) => (
+              <div className="space-y-1.5">
+                <div className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider px-1">
+                  Navigation
+                </div>
+                {[
+                  {
+                    key: 'workspace',
+                    label: 'Workspace',
+                    desc: 'P2P chat, repos & editor',
+                    icon: Layers,
+                  },
+                  {
+                    key: 'incidents',
+                    label: 'Incidents',
+                    desc: 'Triage & Nerve Shark PRs',
+                    icon: AlertTriangle,
+                  },
+                  {
+                    key: 'integration',
+                    label: 'Integration',
+                    desc: 'CI/CD, API keys & SSH',
+                    icon: Globe,
+                  },
+                ].map(({ key, label, desc, icon: Icon }) => (
                   <button
-                    key={tabKey}
+                    key={key}
                     type="button"
                     onClick={() => {
-                      setActiveTab(tabKey);
+                      setActiveTab(key as ActiveTab);
                       setIsMobileMenuOpen(false);
                     }}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-xs font-semibold capitalize transition-colors cursor-pointer ${
-                      activeTab === tabKey
-                        ? 'bg-blue-600 text-white'
-                        : 'text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900'
+                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-all cursor-pointer flex items-center justify-between ${
+                      activeTab === key
+                        ? 'bg-blue-600 text-white font-semibold shadow-sm'
+                        : 'text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/70 border border-transparent'
                     }`}
                   >
-                    {tabKey}
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <Icon className={`w-4 h-4 shrink-0 ${activeTab === key ? 'text-white' : 'text-blue-500'}`} />
+                      <div className="min-w-0">
+                        <div className="font-semibold leading-tight">{label}</div>
+                        <div className={`text-[10px] truncate ${activeTab === key ? 'text-blue-100' : 'text-neutral-500 dark:text-neutral-400'}`}>
+                          {desc}
+                        </div>
+                      </div>
+                    </div>
+                    {activeTab === key && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-white shrink-0 ml-1"></span>
+                    )}
                   </button>
                 ))}
               </div>
 
-              {/* Controls inside Sliding Drawer */}
-              <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
-                {/* Passive Network Indicator (Icon left, Online/Offline right-aligned like Terminal OPEN/CLOSED) */}
-                <div
-                  role="status"
-                  className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white flex items-center justify-between select-none pointer-events-none"
-                >
-                  <div className="flex items-center gap-2">
-                    {isOffline ? (
-                      <WifiOff className="w-3.5 h-3.5 text-amber-500" />
-                    ) : (
-                      <Wifi
-                        className={`w-3.5 h-3.5 ${
-                          networkSignalQuality === 'strong'
-                            ? 'text-emerald-500'
-                            : networkSignalQuality === 'moderate'
-                            ? 'text-emerald-400'
-                            : 'text-amber-400'
-                        }`}
-                      />
-                    )}
-                    <span className="font-mono text-[11px]">
-                      {isOffline
-                        ? 'Offline'
-                        : `Online${networkLatency !== null ? ` (${networkLatency}ms)` : ''}`}
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-mono text-neutral-500 capitalize">
-                    {networkSignalQuality}
-                  </span>
+              {/* Codespace Terminal Quick Toggle */}
+              <div className="space-y-1.5 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+                <div className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider px-1">
+                  Terminal & Shell
                 </div>
-
                 <button
                   type="button"
                   onClick={() => {
@@ -3911,59 +3935,121 @@ export default function App() {
                       }
                     }, 80);
                   }}
-                  className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white flex items-center justify-between cursor-pointer"
+                  className="w-full px-3 py-2.5 rounded-xl text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/50 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-900 dark:text-white flex items-center justify-between cursor-pointer transition-colors"
                 >
-                  <span>Terminal</span>
-                  <span className="font-mono text-[11px]">
+                  <span className="flex items-center gap-2">
+                    <Terminal className="w-4 h-4 text-emerald-500" />
+                    <span className="font-semibold">Codespace Terminal</span>
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                    isCodeDrawerOpen && showTerminal
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                      : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300'
+                  }`}>
                     {isCodeDrawerOpen && showTerminal ? 'OPEN' : 'CLOSED'}
                   </span>
                 </button>
+              </div>
 
+              {/* System Controls */}
+              <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
+                <div className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider px-1">
+                  System
+                </div>
+
+                {/* Passive Network Indicator */}
+                <div
+                  role="status"
+                  className="w-full px-3 py-2 rounded-xl text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/40 text-neutral-900 dark:text-white flex items-center justify-between select-none pointer-events-none"
+                >
+                  <div className="flex items-center gap-2">
+                    {isOffline ? (
+                      <WifiOff className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                    ) : (
+                      <Wifi
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          networkSignalQuality === 'strong'
+                            ? 'text-emerald-500'
+                            : networkSignalQuality === 'moderate'
+                            ? 'text-emerald-400'
+                            : 'text-amber-400'
+                        }`}
+                      />
+                    )}
+                    <span className="font-mono text-[11px]">
+                      {isOffline
+                        ? 'Offline'
+                        : `Online${networkLatency !== null ? ` (${networkLatency}ms)` : ''}`}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-neutral-500 capitalize">
+                    {networkSignalQuality}
+                  </span>
+                </div>
+
+                {/* Theme Toggle */}
                 <button
                   type="button"
                   onClick={toggleTheme}
-                  className="w-full px-3 py-2 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white flex items-center justify-between cursor-pointer"
+                  className="w-full px-3 py-2 rounded-xl text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/40 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-900 dark:text-white flex items-center justify-between cursor-pointer transition-colors"
                 >
-                  <span className="flex items-center gap-1.5">
-                    {isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+                  <span className="flex items-center gap-2">
+                    {isDark ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-blue-500" />}
                     <span>Theme</span>
                   </span>
-                  <span className="font-mono text-[11px]">{isDark ? 'Dark' : 'Light'}</span>
+                  <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">
+                    {isDark ? 'Dark Mode' : 'Light Mode'}
+                  </span>
                 </button>
 
+                {/* Report Bug */}
                 <button
                   type="button"
                   onClick={() => {
                     setIsMobileMenuOpen(false);
                     setShowBugModal(true);
                   }}
-                  className="w-full px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 text-white text-center cursor-pointer"
+                  className="w-full px-3 py-2 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white text-center cursor-pointer transition-colors shadow-sm"
                 >
                   Report /bug
                 </button>
               </div>
             </div>
 
-            {/* Sign In / Profile Section at Bottom of Drawer */}
-            <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800">
+            {/* Sign In / Profile Section at Bottom */}
+            <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 mt-4">
               {isAuthenticated ? (
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-200 dark:border-neutral-800">
                   <div className="flex items-center gap-2 min-w-0">
-                    {currentUser?.photoURL && (
+                    {currentUser?.photoURL ? (
                       <img
                         src={currentUser.photoURL}
                         alt={authenticatedDisplayName}
-                        className="w-5 h-5 rounded-full shrink-0"
+                        className="w-6 h-6 rounded-full shrink-0 ring-1 ring-blue-500"
                         referrerPolicy="no-referrer"
                       />
+                    ) : (
+                      <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
+                        {(authenticatedDisplayName[0] || 'D').toUpperCase()}
+                      </div>
                     )}
-                    <span className="text-xs font-medium truncate">
-                      {authenticatedDisplayName}
-                    </span>
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold truncate leading-tight">
+                        {authenticatedDisplayName}
+                      </div>
+                      <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate font-mono">
+                        {currentUser?.email || emailSession?.email || 'Authenticated'}
+                      </div>
+                    </div>
                   </div>
                   <button
-                    onClick={handleSignOutAll}
-                    className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+                    type="button"
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      handleSignOutAll();
+                    }}
+                    title="Sign Out"
+                    className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer transition-colors"
                   >
                     <LogOut className="w-4 h-4" />
                   </button>
@@ -3977,10 +4063,10 @@ export default function App() {
                     setAuthError('');
                     setShowAuthModal(true);
                   }}
-                  className="w-full py-2 px-3 rounded-lg text-xs font-semibold border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white flex items-center justify-center gap-1.5 cursor-pointer"
+                  className="w-full py-2.5 px-3 rounded-xl text-xs font-semibold bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-white dark:hover:bg-neutral-200 dark:text-black flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-colors"
                 >
-                  <LogIn className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                  <span>Sign In</span>
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Sign In / Register</span>
                 </button>
               )}
             </div>
