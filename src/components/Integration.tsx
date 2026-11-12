@@ -30,10 +30,13 @@ import { maskSecretKey, isKeySealed, sealKeyAfterUse } from '../utils/securityEn
 import {
   auth,
   githubProvider,
+  googleStandardProvider,
+  GoogleAuthProvider,
   signInWithPopup,
   signInWithGoogleForGmail,
   getCachedGmailAccessToken,
   setCachedGmailAccessToken,
+  User,
 } from '../firebase';
 
 export interface SshKeyConfigItem {
@@ -98,6 +101,8 @@ interface IntegrationProps {
   onTriggerWebhook?: (eventType: 'issues' | 'pull_request') => Promise<void>;
   repositories: Record<string, RepositoryContext>;
   incidentReports?: IncidentWorkflowReport[];
+  currentUser?: User | null;
+  emailSession?: { email?: string; displayName?: string } | null;
   onUpdateRepoCiStatus?: (repo: string, status: 'Passing' | 'Failing' | 'Running') => void;
   isDark: boolean;
 }
@@ -342,6 +347,18 @@ const LIVE_ENDPOINTS = [
   },
 ];
 
+// Safe ISO timestamp formatter preventing RangeError: Invalid time value crashes
+const safeFormatIsoTime = (dateStr?: string): string => {
+  if (!dateStr) return '—';
+  try {
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toISOString().slice(11, 19) + ' UTC';
+  } catch {
+    return '—';
+  }
+};
+
 export const Integration: React.FC<IntegrationProps> = ({
   keyEnvironment,
   onChangeEnvironment,
@@ -351,6 +368,8 @@ export const Integration: React.FC<IntegrationProps> = ({
   onTriggerWebhook,
   repositories,
   incidentReports = [],
+  currentUser = null,
+  emailSession = null,
   onUpdateRepoCiStatus,
   isDark,
 }) => {
@@ -366,15 +385,37 @@ export const Integration: React.FC<IntegrationProps> = ({
   const [activeKeySealed, setActiveKeySealed] = useState<boolean>(() => isKeySealed(activeKey));
 
   // Secondary Sign-In / Confirmation Phase State (User or Third-Party Email)
-  // Transient per-visit state: automatically locks whenever leaving the Integration page or browser tab
+  // Preserved in sessionStorage across tab navigation so leaving the page does not reset or crash
   const [integrationVerifiedEmail, setIntegrationVerifiedEmail] = useState<string>(() => {
     try {
-      sessionStorage.removeItem('nerve_integration_verified_email_v1');
+      return sessionStorage.getItem('nerve_integration_verified_email_v1') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const setAndPersistVerifiedEmail = (email: string) => {
+    setIntegrationVerifiedEmail(email);
+    try {
+      if (email) {
+        sessionStorage.setItem('nerve_integration_verified_email_v1', email);
+      } else {
+        sessionStorage.removeItem('nerve_integration_verified_email_v1');
+      }
     } catch {
       // Ignore storage error
     }
-    return '';
-  });
+  };
+
+  const activeUserEmail = currentUser?.email || emailSession?.email || '';
+  const activeUserDisplayName =
+    currentUser?.displayName || emailSession?.displayName || activeUserEmail;
+
+  const handleUnlockWithActiveUser = () => {
+    if (activeUserEmail) {
+      setAndPersistVerifiedEmail(activeUserEmail);
+    }
+  };
   const [integrationProviderType, setIntegrationProviderType] = useState<'user' | 'third-party'>('user');
   const [gateEmailInput, setGateEmailInput] = useState<string>('');
   const [gateCodeInput, setGateCodeInput] = useState<string>('');
@@ -501,6 +542,37 @@ export const Integration: React.FC<IntegrationProps> = ({
     }
   };
 
+  // Direct Google OAuth confirmation (instant 1-click unlock, standard email/profile scope)
+  const handleGoogleOAuthConfirm = async () => {
+    setGateError('');
+    setIsVerifyingGate(true);
+    try {
+      const result = await signInWithPopup(auth, googleStandardProvider);
+      const confirmedEmail =
+        result.user?.email ||
+        `${result.user?.displayName?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'google'}@gmail.com`;
+      try {
+        await fetch('/api/v1/integration/request-access', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: confirmedEmail,
+            providerType: 'user',
+            instantConfirm: true,
+          }),
+        });
+      } catch {
+        // Backend ping non-fatal on Vercel
+      }
+      setAndPersistVerifiedEmail(confirmedEmail);
+    } catch (err: any) {
+      console.error('Google confirmation error:', err);
+      setGateError(err?.message || 'Unable to sign in with Google account.');
+    } finally {
+      setIsVerifyingGate(false);
+    }
+  };
+
   const handleConnectGoogleForGmailCode = async () => {
     setGateError('');
     setIsVerifyingGate(true);
@@ -529,17 +601,22 @@ export const Integration: React.FC<IntegrationProps> = ({
       const confirmedEmail =
         result.user?.email ||
         `${result.user?.displayName?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'github'}@github.com`;
-      await fetch('/api/v1/integration/request-access', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: confirmedEmail,
-          providerType: 'third-party',
-          instantConfirm: true,
-        }),
-      });
-      setIntegrationVerifiedEmail(confirmedEmail);
+      try {
+        await fetch('/api/v1/integration/request-access', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: confirmedEmail,
+            providerType: 'third-party',
+            instantConfirm: true,
+          }),
+        });
+      } catch {
+        // Backend ping non-fatal on Vercel
+      }
+      setAndPersistVerifiedEmail(confirmedEmail);
     } catch (err: any) {
+      console.error('GitHub confirmation error:', err);
       setGateError(err?.message || 'Unable to confirm via GitHub email.');
     } finally {
       setIsVerifyingGate(false);
@@ -560,12 +637,12 @@ export const Integration: React.FC<IntegrationProps> = ({
           code: gateCodeInput.trim(),
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setGateError(data.message || 'Invalid verification code.');
         return;
       }
-      setIntegrationVerifiedEmail(cleanEmail);
+      setAndPersistVerifiedEmail(cleanEmail);
     } catch (err: any) {
       setGateError(err?.message || 'Verification failed.');
     } finally {
@@ -574,42 +651,11 @@ export const Integration: React.FC<IntegrationProps> = ({
   };
 
   const handleLockIntegrationConsole = () => {
-    setIntegrationVerifiedEmail('');
+    setAndPersistVerifiedEmail('');
     setGateStep('email');
     setGateCodeInput('');
     setGateDispatchMessage('');
-    try {
-      sessionStorage.removeItem('nerve_integration_verified_email_v1');
-    } catch {
-      // Ignore
-    }
   };
-
-  // Automatically lock the Integration console once unlocked if the user leaves the page/tab
-  useEffect(() => {
-    if (!integrationVerifiedEmail) return;
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        handleLockIntegrationConsole();
-      }
-    };
-
-    const handlePageLeave = () => {
-      handleLockIntegrationConsole();
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('pagehide', handlePageLeave);
-    window.addEventListener('beforeunload', handlePageLeave);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('pagehide', handlePageLeave);
-      window.removeEventListener('beforeunload', handlePageLeave);
-      handleLockIntegrationConsole();
-    };
-  }, [integrationVerifiedEmail]);
 
   const handleCallThirdPartyEngine = async () => {
     setIsCallingEngine(true);
@@ -993,17 +1039,35 @@ export const Integration: React.FC<IntegrationProps> = ({
         }),
       ]);
 
-      const statusData = await statusRes.json();
-      if (Array.isArray(statusData.repositories)) {
-        setCiFeed(statusData.repositories);
+      let statusData: any = {};
+      let metricsData: any = {};
+      if (statusRes.ok) {
+        statusData = await statusRes.json().catch(() => ({}));
+      }
+      if (metricsRes.ok) {
+        metricsData = await metricsRes.json().catch(() => ({}));
       }
 
-      const metricsData = await metricsRes.json();
-      if (Array.isArray(metricsData.series)) {
+      if (Array.isArray(statusData.repositories) && statusData.repositories.length > 0) {
+        setCiFeed(statusData.repositories);
+      } else {
+        throw new Error('Use fallback repository telemetry');
+      }
+
+      if (Array.isArray(metricsData.series) && metricsData.series.length > 0) {
         setMetrics30d(metricsData.series);
+      } else if (metrics30d.length === 0) {
+        const sampleMetrics: CiMetricDayPoint[] = Array.from({ length: 30 }, (_, i) => ({
+          dayIndex: i + 1,
+          dateLabel: `Day ${i + 1}`,
+          successRate: Math.min(100, Math.max(82, Math.round(92 + Math.sin(i / 3) * 6))),
+          avgDurationSec: Math.round(45 + Math.cos(i / 4) * 8),
+          deploymentsCount: 24,
+        }));
+        setMetrics30d(sampleMetrics);
       }
     } catch {
-      const fallback: CiBuildHealthItem[] = Object.values(repositories).map((r) => ({
+      const fallback: CiBuildHealthItem[] = Object.values(repositories || {}).map((r) => ({
         repo: r.repo,
         branch: r.branch,
         workflowName: `${r.repo.split('/')[1] || r.repo} CI`,
@@ -1018,6 +1082,17 @@ export const Integration: React.FC<IntegrationProps> = ({
         ),
       }));
       setCiFeed(fallback);
+
+      if (metrics30d.length === 0) {
+        const sampleMetrics: CiMetricDayPoint[] = Array.from({ length: 30 }, (_, i) => ({
+          dayIndex: i + 1,
+          dateLabel: `Day ${i + 1}`,
+          successRate: Math.min(100, Math.max(82, Math.round(92 + Math.sin(i / 3) * 6))),
+          avgDurationSec: Math.round(45 + Math.cos(i / 4) * 8),
+          deploymentsCount: 24,
+        }));
+        setMetrics30d(sampleMetrics);
+      }
     } finally {
       setIsRefreshingCi(false);
     }
@@ -1244,14 +1319,14 @@ export const Integration: React.FC<IntegrationProps> = ({
 
     repoIncidents.forEach((inc) => {
       if (inc.reportedAtIso) {
-        latestReportedLabel = new Date(inc.reportedAtIso).toISOString().slice(11, 19) + ' UTC';
+        latestReportedLabel = safeFormatIsoTime(inc.reportedAtIso);
       }
       if (inc.reportedAtIso && inc.mergedAtIso) {
         const startMs = new Date(inc.reportedAtIso).getTime();
         const endMs = new Date(inc.mergedAtIso).getTime();
         if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs >= startMs) {
           recoveryDurationsSec.push(Math.max(1, Math.round((endMs - startMs) / 1000)));
-          latestMergedLabel = new Date(inc.mergedAtIso).toISOString().slice(11, 19) + ' UTC';
+          latestMergedLabel = safeFormatIsoTime(inc.mergedAtIso);
         }
       }
     });
@@ -1478,15 +1553,36 @@ const data = await response.json();`;
                 {isVerifyingGate ? 'Preparing Email Dispatch...' : 'Send Verification Code to Email'}
               </button>
 
+              {activeUserEmail && (
+                <div className="p-3 rounded-xl border border-blue-500/30 bg-blue-500/10 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-blue-700 dark:text-blue-300 truncate">
+                      Active Account: @{activeUserDisplayName}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500 truncate max-w-[180px]">
+                      {activeUserEmail}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleUnlockWithActiveUser}
+                    className="w-full py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs cursor-pointer transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Quick Unlock with Active Account</span>
+                  </button>
+                </div>
+              )}
+
               <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
                 <div className="text-[11px] text-center text-slate-500 dark:text-slate-400">
-                  Or connect Google Gmail to dispatch the 6-digit code to your inbox
+                  Or instant 1-click verify with your developer OAuth credentials:
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <button
                     type="button"
                     disabled={isVerifyingGate}
-                    onClick={handleConnectGoogleForGmailCode}
+                    onClick={handleGoogleOAuthConfirm}
                     className="py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-900 text-slate-800 dark:text-slate-100 font-semibold flex items-center justify-center gap-2 cursor-pointer shadow-xs"
                   >
                     <svg

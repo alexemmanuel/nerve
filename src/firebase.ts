@@ -30,24 +30,37 @@ import {
 import firebaseConfig from '../firebase-applet-config.json';
 import { DeveloperPeer } from './data/mockWorkspaceData';
 
-// Resolve configuration securely from client environment variables when provided
+// Always read authDomain directly from imported firebaseConfig
+export const TARGET_AUTH_DOMAIN: string = firebaseConfig.authDomain;
+
+// Resolved configuration directly utilizing firebase-applet-config.json
 const resolvedFirebaseConfig = {
   ...firebaseConfig,
-  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined) || firebaseConfig.apiKey,
-  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined) || firebaseConfig.projectId,
+  apiKey: firebaseConfig.apiKey,
+  projectId: firebaseConfig.projectId,
   firestoreDatabaseId:
-    (import.meta.env.VITE_FIREBASE_DATABASE_ID as string | undefined) ||
     (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
     'ai-studio-gitsurfacenative-a6673b36-a9a3-4ed1-b52e-1d3c6bf8ad06',
-  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined) || firebaseConfig.authDomain,
-  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined) || firebaseConfig.appId,
-  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined) || firebaseConfig.storageBucket,
+  authDomain: firebaseConfig.authDomain,
+  appId: firebaseConfig.appId,
+  storageBucket: firebaseConfig.storageBucket,
 };
 
 // Silence internal Firestore WebChannel retry console.error messages in restricted iframe/proxy networks
 setLogLevel('silent');
 
-const app = getApps().length > 0 ? getApp() : initializeApp(resolvedFirebaseConfig);
+function getOrInitApp() {
+  if (getApps().length > 0) {
+    const existingApp = getApp();
+    if (existingApp.options) {
+      existingApp.options.authDomain = resolvedFirebaseConfig.authDomain;
+    }
+    return existingApp;
+  }
+  return initializeApp(resolvedFirebaseConfig);
+}
+
+const app = getOrInitApp();
 
 function initDb() {
   try {
@@ -66,6 +79,105 @@ function initDb() {
 export const db = initDb();
 export const auth = getAuth(app);
 
+// Explicitly ensure the Auth instance's internal authDomain configuration matches TARGET_AUTH_DOMAIN
+// so popups and redirects point directly to 'gen-lang-client-0310681320.firebaseapp.com' when running on Vercel
+if ((auth as any)?.config) {
+  (auth as any).config.authDomain = resolvedFirebaseConfig.authDomain;
+}
+
+/**
+ * Diagnostic test function that verifies if the current Firebase Auth instance
+ * is correctly initialized with the provided authDomain from firebase-applet-config.json
+ * and logs the full configuration to console for debugging Vercel deployment issues.
+ */
+export function runFirebaseAuthDiagnostics(): {
+  isConfigured: boolean;
+  expectedAuthDomain: string;
+  actualAuthDomain: string;
+  appOptionsAuthDomain: string;
+  projectId: string;
+  isVercel: boolean;
+} {
+  const expectedAuthDomain = firebaseConfig.authDomain;
+  const appOptionsAuthDomain = (app?.options as any)?.authDomain || '';
+  const actualAuthDomain = (auth as any)?.config?.authDomain || appOptionsAuthDomain || '';
+  const isConfigured = actualAuthDomain === expectedAuthDomain;
+  const isVercel =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.includes('vercel.app') ||
+      window.location.hostname.endsWith('.vercel.app'));
+
+  console.groupCollapsed(
+    `[Firebase Auth Diagnostic] ${isConfigured ? '✓ AuthDomain Synchronized' : '⚠ AuthDomain Discrepancy'}`
+  );
+  console.log('Production Target authDomain:', expectedAuthDomain);
+  console.log('Resolved App options.authDomain:', appOptionsAuthDomain);
+  console.log('Firebase Auth instance config.authDomain:', actualAuthDomain);
+  console.log('Current Hostname:', typeof window !== 'undefined' ? window.location.hostname : 'SSR/Node');
+  console.log('Running on Vercel Host:', isVercel);
+  console.log('Project ID:', firebaseConfig.projectId);
+  if (!isConfigured) {
+    console.warn(
+      `[Firebase Auth Diagnostic] Expected authDomain "${expectedAuthDomain}", but found "${actualAuthDomain}". OAuth popups may fail on Vercel if domains mismatch.`
+    );
+  } else {
+    console.log(
+      `[Firebase Auth Diagnostic] OAuth handler configured: https://${expectedAuthDomain}/__/auth/handler`
+    );
+  }
+  console.groupEnd();
+
+  return {
+    isConfigured,
+    expectedAuthDomain,
+    actualAuthDomain,
+    appOptionsAuthDomain,
+    projectId: firebaseConfig.projectId,
+    isVercel,
+  };
+}
+
+// Run diagnostic check on initialization
+runFirebaseAuthDiagnostics();
+
+/**
+ * Formats authentication error messages with actionable troubleshooting guidance,
+ * specifically pointing users to GitHub OAuth provider settings and Firestore rules
+ * in the Firebase Console when permission or operation errors occur.
+ */
+export function formatAuthErrorMessage(err: unknown, providerName: string = 'GitHub'): string {
+  const anyErr = err as any;
+  const code = anyErr?.code || '';
+  const rawMsg = anyErr?.message || String(err || '');
+
+  if (code === 'auth/operation-not-allowed' || rawMsg.includes('operation-not-allowed')) {
+    return `${providerName} sign-in is disabled in Firebase. In the Firebase Console, go to Authentication → Sign-in method, click "${providerName}", and enable it with your Client ID and Secret.`;
+  }
+
+  if (
+    rawMsg.includes('Missing or insufficient permissions') ||
+    code === 'permission-denied' ||
+    rawMsg.includes('permission-denied')
+  ) {
+    return `Firestore permission denied: Your account authenticated successfully, but database permissions prevented saving your user profile. Verify that your GitHub OAuth provider is enabled in Firebase Console and that the latest Firestore rules are deployed.`;
+  }
+
+  if (code === 'auth/unauthorized-domain' || rawMsg.includes('unauthorized-domain')) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : 'your Vercel domain';
+    return `Unauthorized domain (${host}): In the Firebase Console, go to Authentication → Settings → Authorized domains and add "${host}" to the list.`;
+  }
+
+  if (code === 'auth/popup-closed-by-user') {
+    return `${providerName} sign-in popup was closed before completing authentication. Please try again.`;
+  }
+
+  if (code === 'auth/popup-blocked') {
+    return `Sign-in popup was blocked by your browser. Please allow popups for this site and try again.`;
+  }
+
+  return anyErr?.message || `${providerName} sign-in could not complete.`;
+}
+
 export const githubProvider = new GithubAuthProvider();
 githubProvider.addScope('read:user');
 
@@ -76,6 +188,12 @@ SCOPES.forEach((scope) => googleProvider.addScope(scope));
 googleProvider.setCustomParameters({
   prompt: 'consent',
 });
+
+// Standard Google OAuth Provider (lightweight, userinfo & email, no sensitive gmail.send scope)
+export const googleStandardProvider = new GoogleAuthProvider();
+googleStandardProvider.addScope('email');
+googleStandardProvider.addScope('profile');
+export { GoogleAuthProvider };
 
 let isSigningInWithGoogle = false;
 let cachedGmailAccessToken: string | null = null;
@@ -319,7 +437,11 @@ export async function syncAuthenticatedUserAndPeers(
       });
     }
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, userDocPath);
+    try {
+      handleFirestoreError(error, OperationType.WRITE, userDocPath);
+    } catch (e) {
+      console.warn('Firestore user profile sync non-fatal fallback:', e);
+    }
   }
 
   // Load user's saved GitHub peers from Firestore
@@ -357,7 +479,11 @@ export async function syncAuthenticatedUserAndPeers(
       });
     }
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, peersCollectionPath);
+    try {
+      handleFirestoreError(error, OperationType.LIST, peersCollectionPath);
+    } catch (e) {
+      console.warn('Firestore peers fetch non-fatal fallback:', e);
+    }
   }
 
   return [];

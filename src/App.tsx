@@ -93,6 +93,7 @@ import {
   addRealGitHubPeerToFirestore,
   updateGitHubPeerFollowInFirestore,
   deleteGitHubPeerFromFirestore,
+  formatAuthErrorMessage,
 } from './firebase';
 
 type ActiveTab = 'workspace' | 'incidents' | 'integration';
@@ -1292,6 +1293,8 @@ export default function App() {
           }
         } catch (err) {
           console.error('Error syncing Firestore GitHub peers:', err);
+          const errorMsg = formatAuthErrorMessage(err, 'GitHub');
+          setAuthError(errorMsg);
         }
       }
     });
@@ -1511,14 +1514,8 @@ export default function App() {
       }
       setShowAuthModal(false);
     } catch (err: any) {
-      const code = err?.code || '';
-      if (code === 'auth/operation-not-allowed') {
-        setAuthError(
-          'Enable GitHub provider in Firebase Console (Authentication -> Sign-in method -> GitHub), or use Email/Password or Google Sign-In.'
-        );
-      } else {
-        setAuthError(err?.message || 'GitHub sign-in popup could not complete.');
-      }
+      console.error('GitHub sign-in failed:', err);
+      setAuthError(formatAuthErrorMessage(err, 'GitHub'));
     } finally {
       setIsSubmittingAuth(false);
     }
@@ -1546,14 +1543,8 @@ export default function App() {
       }
       setShowAuthModal(false);
     } catch (err: any) {
-      const code = err?.code || '';
-      if (code === 'auth/operation-not-allowed') {
-        setAuthError(
-          'Enable Google provider in Firebase Console (Authentication -> Sign-in method -> Google), or use Email/Password or GitHub Sign-In.'
-        );
-      } else {
-        setAuthError(err?.message || 'Google sign-in popup could not complete.');
-      }
+      console.error('Google sign-in failed:', err);
+      setAuthError(formatAuthErrorMessage(err, 'Google'));
     } finally {
       setIsSubmittingAuth(false);
     }
@@ -3931,6 +3922,8 @@ export default function App() {
           onTriggerWebhook={(eventType) => handleTriggerGitHubWebhook(eventType)}
           repositories={repositories}
           incidentReports={incidentReports}
+          currentUser={currentUser}
+          emailSession={emailSession}
           onUpdateRepoCiStatus={(repo, status) => {
             setRepositories((prev) =>
               prev[repo]

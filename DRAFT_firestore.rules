@@ -13,7 +13,11 @@ service cloud.firestore {
     }
 
     function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        request.auth.token.firebase.sign_in_provider == 'github.com' ||
+        request.auth.token.firebase.sign_in_provider == 'google.com'
+      );
     }
 
     function isValidId(id) {
@@ -112,7 +116,7 @@ service cloud.firestore {
 
     // Collection 1: /users_public/{userId}
     match /users_public/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && existing().uid == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(userId);
       allow list: if isSignedIn() && existing().uid == request.auth.uid;
 
       allow create: if isVerifiedUser()
