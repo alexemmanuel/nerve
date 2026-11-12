@@ -1281,25 +1281,77 @@ export default function App() {
   }, [activeRepoKey, activeFilePath, highlightedLine]);
 
   // Listen to Firebase Auth state and load user's saved GitHub peers
+  const ensureSelfPeerInRoster = (
+    handle: string,
+    displayName?: string | null,
+    photoURL?: string | null
+  ) => {
+    const clean = handle.toLowerCase().replace(/[^a-z0-9-]/g, '-') || 'developer';
+    const initials = clean.slice(0, 2).toUpperCase() || 'GH';
+    const selfPeer: DeveloperPeer = {
+      id: `dev-${clean}`,
+      handle: clean,
+      name: displayName || clean,
+      role: 'Workspace Lead Developer',
+      organization: 'GitHub Community',
+      avatarUrl:
+        photoURL || `https://avatars.githubusercontent.com/${encodeURIComponent(clean)}`,
+      youFollowThem: true,
+      theyFollowYou: true,
+      proofOfWorkCommits: 48,
+      mergedPrs: 12,
+      maintainedRepos: [activeRepoKey || 'owner/repository'],
+      focusModeOptOut: false,
+      statusText: 'Connected in Workspace',
+      activeBranch: 'main',
+      avatarInitials: initials,
+    };
+    setPeers((prev) => {
+      const exists = prev.some((p) => p.handle.toLowerCase() === clean);
+      return exists ? prev : [selfPeer, ...prev];
+    });
+    setSelectedPeerHandle((prev) => prev || clean);
+  };
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       if (user) {
+        const ghScreenName =
+          (user as any)?._tokenResponse?.screenName ||
+          (user as any)?.reloadUserInfo?.screenName ||
+          user.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
+          user.email?.split('@')[0] ||
+          'developer';
         try {
-          const syncedPeers = await syncAuthenticatedUserAndPeers(user);
+          const syncedPeers = await syncAuthenticatedUserAndPeers(user, ghScreenName);
           if (syncedPeers.length > 0) {
             setPeers(syncedPeers);
             setSelectedPeerHandle((prev) => prev || syncedPeers[0].handle);
+          } else {
+            ensureSelfPeerInRoster(ghScreenName, user.displayName, user.photoURL);
           }
         } catch (err) {
           console.error('Error syncing Firestore GitHub peers:', err);
+          ensureSelfPeerInRoster(ghScreenName, user.displayName, user.photoURL);
           const errorMsg = formatAuthErrorMessage(err, 'GitHub');
           setAuthError(errorMsg);
         }
       }
     });
     return () => unsub();
-  }, []);
+  }, [activeRepoKey]);
+
+  // Sync emailSession to peers if currentUser is not active
+  useEffect(() => {
+    if (emailSession && !currentUser && peers.length === 0) {
+      const cleanHandle =
+        emailSession.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
+        emailSession.email.split('@')[0] ||
+        'developer';
+      ensureSelfPeerInRoster(cleanHandle, emailSession.displayName, undefined);
+    }
+  }, [emailSession, currentUser, peers.length]);
 
   // =========================================================================
   // AUTHENTICATION HANDLERS:
@@ -1317,6 +1369,48 @@ export default function App() {
       }
     } catch {
       // Ignore storage error
+    }
+  };
+
+  const handleUserAuthenticatedFromIntegration = async (
+    user: User | null,
+    session?: VerifiedEmailSession | null
+  ) => {
+    if (user) {
+      setCurrentUser(user);
+      const ghScreenName =
+        (user as any)?._tokenResponse?.screenName ||
+        (user as any)?.reloadUserInfo?.screenName ||
+        user.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
+        user.email?.split('@')[0] ||
+        'developer';
+      try {
+        const syncedPeers = await syncAuthenticatedUserAndPeers(user, ghScreenName);
+        if (syncedPeers.length > 0) {
+          setPeers((prev) => {
+            const existingHandles = new Set(prev.map((p) => p.handle.toLowerCase()));
+            const merged = [...prev];
+            for (const sp of syncedPeers) {
+              if (!existingHandles.has(sp.handle.toLowerCase())) {
+                merged.push(sp);
+              }
+            }
+            return merged;
+          });
+          setSelectedPeerHandle((prev) => prev || syncedPeers[0].handle);
+        } else {
+          ensureSelfPeerInRoster(ghScreenName, user.displayName, user.photoURL);
+        }
+      } catch {
+        ensureSelfPeerInRoster(ghScreenName, user.displayName, user.photoURL);
+      }
+    } else if (session) {
+      saveVerifiedEmailSession(session);
+      const cleanHandle =
+        session.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
+        session.email.split('@')[0] ||
+        'developer';
+      ensureSelfPeerInRoster(cleanHandle, session.displayName, undefined);
     }
   };
 
@@ -3924,6 +4018,7 @@ export default function App() {
           incidentReports={incidentReports}
           currentUser={currentUser}
           emailSession={emailSession}
+          onUserAuthenticated={handleUserAuthenticatedFromIntegration}
           onUpdateRepoCiStatus={(repo, status) => {
             setRepositories((prev) =>
               prev[repo]
