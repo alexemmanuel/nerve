@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ShieldAlert,
   Lock,
@@ -3623,7 +3624,7 @@ export default function App() {
   const isAuthenticated = Boolean(currentUser || emailSession);
 
   return (
-    <div className="min-h-screen bg-white dark:bg-black text-black dark:text-white flex flex-col transition-colors">
+    <div className="min-h-screen overflow-x-clip bg-white dark:bg-black text-black dark:text-white flex flex-col transition-colors">
       {/* =====================================================================
           RESPONSIVE TOP BAR + MOBILE SLIDING NAVBAR DRAWER TRIGGER
       ===================================================================== */}
@@ -3818,24 +3819,26 @@ export default function App() {
       </header>
 
       {/* =====================================================================
-          MOBILE SLIDING NAVBAR DRAWER
+          MOBILE SLIDING NAVBAR DRAWER (Portaled to body, no backdrop-blur GPU conflict)
       ===================================================================== */}
-      {isMobileMenuOpen && (
-        <div className="fixed inset-0 z-50 md:hidden">
-          {/* Backdrop with click to close */}
-          <div
-            className="fixed inset-0 bg-black/75 backdrop-blur-sm transition-opacity"
-            onClick={() => setIsMobileMenuOpen(false)}
-            aria-label="Close navigation overlay"
-          />
+      {isMobileMenuOpen &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div className="fixed inset-0 z-[9998] md:hidden">
+            {/* Clean semi-transparent scrim without backdrop-filter to avoid Android Chrome layer bugs */}
+            <div
+              className="fixed inset-0 z-[9998] bg-black/65"
+              onClick={() => setIsMobileMenuOpen(false)}
+              aria-label="Close navigation overlay"
+            />
 
-          {/* Drawer Panel - fixed to right edge, high z-index, guaranteed height, clean contrast */}
-          <aside
-            role="dialog"
-            aria-modal="true"
-            aria-label="Nerve Navigation Menu"
-            className="fixed top-0 right-0 bottom-0 z-50 w-72 max-w-[85vw] h-screen h-dvh bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 border-l border-neutral-200 dark:border-neutral-800 p-4 flex flex-col justify-between shadow-2xl overflow-y-auto"
-          >
+            {/* Drawer Panel - fixed to right edge, top z-index, solid surface */}
+            <aside
+              role="dialog"
+              aria-modal="true"
+              aria-label="Nerve Navigation Menu"
+              className="fixed top-0 right-0 bottom-0 z-[9999] w-72 max-w-[85vw] bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 border-l border-neutral-200 dark:border-neutral-800 p-4 flex flex-col justify-between shadow-2xl overflow-y-auto"
+            >
             <div className="space-y-4">
               {/* Header */}
               <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-3">
@@ -4071,7 +4074,8 @@ export default function App() {
               )}
             </div>
           </aside>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Offline Queue Banner when items are waiting in LocalStorage */}
