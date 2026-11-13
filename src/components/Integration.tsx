@@ -410,7 +410,7 @@ export const Integration: React.FC<IntegrationProps> = ({
   repositories,
   incidentReports = [],
   currentUser = null,
-  emailSession = null,
+  emailSession: _emailSession = null,
   onUserAuthenticated,
   onUpdateRepoCiStatus,
   isDark,
@@ -434,24 +434,14 @@ export const Integration: React.FC<IntegrationProps> = ({
     setIntegrationVerifiedEmail(email);
   };
 
-  const activeUserEmail = currentUser?.email || emailSession?.email || '';
-  const activeUserDisplayName =
-    currentUser?.displayName || emailSession?.displayName || activeUserEmail;
-
   const [integrationProviderType, setIntegrationProviderType] = useState<'user' | 'third-party'>('user');
-  const [gateEmailInput, setGateEmailInput] = useState<string>(() => activeUserEmail);
+  const [gateEmailInput, setGateEmailInput] = useState<string>('');
   const [gateCodeInput, setGateCodeInput] = useState<string>('');
   const [gateStep, setGateStep] = useState<'email' | 'code'>('email');
   const [gateError, setGateError] = useState<string>('');
   const [gateDispatchMessage, setGateDispatchMessage] = useState<string>('');
   const [isVerifyingGate, setIsVerifyingGate] = useState<boolean>(false);
   const [showGmailSendConfirmModal, setShowGmailSendConfirmModal] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (activeUserEmail && !gateEmailInput) {
-      setGateEmailInput(activeUserEmail);
-    }
-  }, [activeUserEmail]);
 
   // Re-lock console if user navigates away or switches browser tabs while unlocked
   useEffect(() => {
@@ -1688,22 +1678,6 @@ const data = await response.json();`;
               >
                 {isVerifyingGate ? 'Preparing Email Dispatch...' : 'Send Verification Code to Email'}
               </button>
-
-              {activeUserEmail && (
-                <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/80 space-y-1.5 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">
-                      Active Account: @{activeUserDisplayName}
-                    </span>
-                    <span className="text-[11px] font-mono text-slate-500 truncate max-w-[180px]">
-                      {activeUserEmail}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Security re-authentication is required each time you enter Integration. Re-authenticate below via OAuth or request an email code.
-                  </p>
-                </div>
-              )}
 
               <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
                 <div className="text-[11px] text-center text-slate-500 dark:text-slate-400">

@@ -85,6 +85,7 @@ import {
   signInWithPopup,
   signInWithGoogleForGmail,
   getCachedGmailAccessToken,
+  setCachedGmailAccessToken,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   sendEmailVerification,
@@ -1648,8 +1649,14 @@ export default function App() {
 
   const handleSignOutAll = async () => {
     saveVerifiedEmailSession(null);
-    if (currentUser) {
-      await signOut(auth);
+    setCachedGmailAccessToken(null);
+    setCurrentUser(null);
+    if (auth.currentUser || currentUser) {
+      try {
+        await signOut(auth);
+      } catch {
+        // Ignore signOut errors if session was already invalidated
+      }
     }
   };
 
