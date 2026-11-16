@@ -20,6 +20,7 @@ import {
   Eye,
   EyeOff,
   Lock,
+  LogOut,
   Mail,
   Globe,
   ShieldCheck,
@@ -103,6 +104,9 @@ interface IntegrationProps {
   incidentReports?: IncidentWorkflowReport[];
   currentUser?: User | null;
   emailSession?: { uid: string; email: string; displayName: string } | null;
+  verifiedEmail?: string;
+  onChangeVerifiedEmail?: (email: string) => void;
+  onSignOut?: () => Promise<void> | void;
   onUserAuthenticated?: (
     user: User | null,
     emailSession?: { uid: string; email: string; displayName: string } | null
@@ -411,6 +415,9 @@ export const Integration: React.FC<IntegrationProps> = ({
   incidentReports = [],
   currentUser = null,
   emailSession: _emailSession = null,
+  verifiedEmail,
+  onChangeVerifiedEmail,
+  onSignOut,
   onUserAuthenticated,
   onUpdateRepoCiStatus,
   isDark,
@@ -426,12 +433,32 @@ export const Integration: React.FC<IntegrationProps> = ({
   const [showActiveKey, setShowActiveKey] = useState<boolean>(false);
   const [activeKeySealed, setActiveKeySealed] = useState<boolean>(() => isKeySealed(activeKey));
 
-  // Secondary Sign-In / Confirmation Phase State (User or Third-Party Email)
-  // Automatically locks whenever leaving the Integration section or reloading the page to protect API keys & SSH secrets
-  const [integrationVerifiedEmail, setIntegrationVerifiedEmail] = useState<string>('');
+  // Persisted Sign-In / Confirmation State (stays signed in across navigation & reloads until user clicks Sign Out)
+  const [localVerifiedEmail, setLocalVerifiedEmail] = useState<string>(() => {
+    try {
+      return localStorage.getItem('nerve_integration_verified_email_v1') || '';
+    } catch {
+      return '';
+    }
+  });
+  const integrationVerifiedEmail =
+    verifiedEmail !== undefined ? verifiedEmail : localVerifiedEmail;
 
   const setAndPersistVerifiedEmail = (email: string) => {
-    setIntegrationVerifiedEmail(email);
+    setLocalVerifiedEmail(email);
+    if (onChangeVerifiedEmail) {
+      onChangeVerifiedEmail(email);
+    } else {
+      try {
+        if (email) {
+          localStorage.setItem('nerve_integration_verified_email_v1', email);
+        } else {
+          localStorage.removeItem('nerve_integration_verified_email_v1');
+        }
+      } catch {
+        // Ignore storage error
+      }
+    }
   };
 
   const [integrationProviderType, setIntegrationProviderType] = useState<'user' | 'third-party'>('user');
@@ -442,24 +469,6 @@ export const Integration: React.FC<IntegrationProps> = ({
   const [gateDispatchMessage, setGateDispatchMessage] = useState<string>('');
   const [isVerifyingGate, setIsVerifyingGate] = useState<boolean>(false);
   const [showGmailSendConfirmModal, setShowGmailSendConfirmModal] = useState<boolean>(false);
-
-  // Re-lock console if user navigates away or switches browser tabs while unlocked
-  useEffect(() => {
-    if (!integrationVerifiedEmail) return;
-
-    const handleTabHide = () => {
-      if (document.visibilityState === 'hidden' && !isVerifyingGate) {
-        setIntegrationVerifiedEmail('');
-        setGateStep('email');
-        setGateCodeInput('');
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleTabHide);
-    return () => {
-      document.removeEventListener('visibilitychange', handleTabHide);
-    };
-  }, [integrationVerifiedEmail, isVerifyingGate]);
   const [pendingGmailToken, setPendingGmailToken] = useState<string | null>(() =>
     getCachedGmailAccessToken()
   );
@@ -701,11 +710,14 @@ export const Integration: React.FC<IntegrationProps> = ({
     }
   };
 
-  const handleLockIntegrationConsole = () => {
+  const handleExplicitSignOut = async () => {
     setAndPersistVerifiedEmail('');
     setGateStep('email');
     setGateCodeInput('');
     setGateDispatchMessage('');
+    if (onSignOut) {
+      await onSignOut();
+    }
   };
 
   const handleCallThirdPartyEngine = async () => {
@@ -1846,12 +1858,12 @@ const data = await response.json();`;
           </span>
           <button
             type="button"
-            onClick={handleLockIntegrationConsole}
-            className="px-2 py-0.5 rounded text-[11px] font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 border border-slate-200 dark:border-slate-800 cursor-pointer flex items-center gap-1"
-            title="Lock Integration Console and require email confirmation again"
+            onClick={handleExplicitSignOut}
+            className="px-2.5 py-0.5 rounded text-[11px] font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 border border-slate-200 dark:border-slate-800 cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
+            title="Sign out of Integration Console"
           >
-            <Lock className="w-3 h-3" />
-            <span>Lock</span>
+            <LogOut className="w-3 h-3" />
+            <span>Sign Out</span>
           </button>
         </div>
 

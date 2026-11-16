@@ -47,6 +47,8 @@ import {
   Smile,
   Download,
   Globe,
+  Shield,
+  FileText,
 } from 'lucide-react';
 import {
   DeveloperPeer,
@@ -60,6 +62,7 @@ import {
 } from './data/incidentReports';
 import { IncidentWorkflowView } from './components/IncidentWorkflowView';
 import { Integration } from './components/Integration';
+import { LegalDocumentView } from './components/LegalDocumentView';
 import { useP2PEngine, SignalingTransportMode } from './hooks/useP2PEngine';
 import {
   getOfflineQueue,
@@ -99,9 +102,36 @@ import {
   formatAuthErrorMessage,
 } from './firebase';
 
-type ActiveTab = 'workspace' | 'incidents' | 'integration';
+type ActiveTab = 'workspace' | 'incidents' | 'integration' | 'privacy' | 'terms';
 type AuthModalMode = 'signin' | 'signup';
 type SignUpStep = 'credentials' | 'verify_code';
+
+const resolveTabFromLocation = (): ActiveTab => {
+  if (typeof window === 'undefined') return 'workspace';
+  const path = window.location.pathname.toLowerCase().replace(/\/+$/, '');
+  const hash = window.location.hash.toLowerCase().replace(/^#\/?/, '');
+  if (path === '/privacy' || path === '/privacy-policy' || hash === 'privacy' || hash === 'privacy-policy') {
+    return 'privacy';
+  }
+  if (path === '/terms' || path === '/terms-and-conditions' || hash === 'terms' || hash === 'terms-and-conditions') {
+    return 'terms';
+  }
+  if (path === '/incidents' || hash === 'incidents') {
+    return 'incidents';
+  }
+  if (path === '/integration' || hash === 'integration') {
+    return 'integration';
+  }
+  return 'workspace';
+};
+
+const TAB_PATH_MAP: Record<ActiveTab, string> = {
+  workspace: '/',
+  incidents: '/incidents',
+  integration: '/integration',
+  privacy: '/privacy',
+  terms: '/terms',
+};
 
 export type TerminalSubTabKey = 'build' | 'logs';
 export type TerminalSplitDirection = 'none' | 'vertical' | 'horizontal' | 'grid';
@@ -322,11 +352,54 @@ interface VerifiedEmailSession {
 }
 
 const LOCAL_AUTH_SESSION_KEY = 'nerve_verified_email_session_v1';
+const LOCAL_INTEGRATION_SESSION_KEY = 'nerve_integration_verified_email_v1';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('workspace');
+  const [activeTab, setActiveTabState] = useState<ActiveTab>(() => resolveTabFromLocation());
   const [isDark, setIsDark] = useState<boolean>(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+
+  const [integrationVerifiedEmail, setIntegrationVerifiedEmail] = useState<string>(() => {
+    try {
+      return localStorage.getItem(LOCAL_INTEGRATION_SESSION_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const saveIntegrationVerifiedEmail = (email: string) => {
+    setIntegrationVerifiedEmail(email);
+    try {
+      if (email) {
+        localStorage.setItem(LOCAL_INTEGRATION_SESSION_KEY, email);
+      } else {
+        localStorage.removeItem(LOCAL_INTEGRATION_SESSION_KEY);
+      }
+    } catch {
+      // Ignore storage error
+    }
+  };
+
+  const setActiveTab = (tab: ActiveTab) => {
+    setActiveTabState(tab);
+    if (typeof window !== 'undefined') {
+      const targetPath = TAB_PATH_MAP[tab] || '/';
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState({ tab }, '', targetPath);
+      }
+      if (tab === 'privacy' || tab === 'terms') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveTabState(resolveTabFromLocation());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Firebase Auth + Verified Email/Password Session State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -1649,6 +1722,7 @@ export default function App() {
 
   const handleSignOutAll = async () => {
     saveVerifiedEmailSession(null);
+    saveIntegrationVerifiedEmail('');
     setCachedGmailAccessToken(null);
     setCurrentUser(null);
     if (auth.currentUser || currentUser) {
@@ -3673,19 +3747,25 @@ export default function App() {
         </button>
 
         {/* Desktop Center Navigation */}
-        <nav className="hidden md:flex items-center gap-6 text-xs sm:text-sm font-medium text-black/70 dark:text-white/70">
-          {(['workspace', 'incidents', 'integration'] as const).map((tabKey) => (
+        <nav className="hidden md:flex items-center gap-5 lg:gap-6 text-xs sm:text-sm font-medium text-black/70 dark:text-white/70">
+          {([
+            { key: 'workspace', label: 'Workspace' },
+            { key: 'incidents', label: 'Incidents' },
+            { key: 'integration', label: 'Integration' },
+            { key: 'privacy', label: 'Privacy' },
+            { key: 'terms', label: 'Terms' },
+          ] as const).map(({ key, label }) => (
             <button
-              key={tabKey}
+              key={key}
               type="button"
-              onClick={() => setActiveTab(tabKey)}
-              className={`capitalize hover:text-black dark:hover:text-white transition-colors py-1 cursor-pointer ${
-                activeTab === tabKey
+              onClick={() => setActiveTab(key)}
+              className={`hover:text-black dark:hover:text-white transition-colors py-1 cursor-pointer whitespace-nowrap shrink-0 ${
+                activeTab === key
                   ? 'text-black dark:text-white font-semibold underline underline-offset-8 decoration-2 decoration-blue-600 dark:decoration-blue-400'
                   : ''
               }`}
             >
-              {tabKey}
+              {label}
             </button>
           ))}
         </nav>
@@ -3903,6 +3983,18 @@ export default function App() {
                     label: 'Integration',
                     desc: 'CI/CD, API keys & SSH',
                     icon: Globe,
+                  },
+                  {
+                    key: 'privacy',
+                    label: 'Privacy Policy',
+                    desc: 'Data & Google API notice',
+                    icon: Shield,
+                  },
+                  {
+                    key: 'terms',
+                    label: 'Terms & Conditions',
+                    desc: 'Service & acceptable use',
+                    icon: FileText,
                   },
                 ].map(({ key, label, desc, icon: Icon }) => (
                   <button
@@ -4132,6 +4224,9 @@ export default function App() {
           incidentReports={incidentReports}
           currentUser={currentUser}
           emailSession={emailSession}
+          verifiedEmail={integrationVerifiedEmail}
+          onChangeVerifiedEmail={saveIntegrationVerifiedEmail}
+          onSignOut={handleSignOutAll}
           onUserAuthenticated={handleUserAuthenticatedFromIntegration}
           onUpdateRepoCiStatus={(repo, status) => {
             setRepositories((prev) =>
@@ -4168,6 +4263,22 @@ export default function App() {
           onOpenBugModal={() => setShowBugModal(true)}
           onBackToMessenger={() => setActiveTab('workspace')}
           isDark={isDark}
+        />
+      )}
+
+      {activeTab === 'privacy' && (
+        <LegalDocumentView
+          page="privacy"
+          onSwitchPage={(next) => setActiveTab(next)}
+          onBackToWorkspace={() => setActiveTab('workspace')}
+        />
+      )}
+
+      {activeTab === 'terms' && (
+        <LegalDocumentView
+          page="terms"
+          onSwitchPage={(next) => setActiveTab(next)}
+          onBackToWorkspace={() => setActiveTab('workspace')}
         />
       )}
 
@@ -7424,6 +7535,34 @@ export default function App() {
                 </svg>
                 <span>Sign in with Google</span>
               </button>
+
+              <p className="text-[11px] text-center text-neutral-500 dark:text-neutral-400 pt-1 leading-snug">
+                By continuing, you agree to Nerve&apos;s{' '}
+                <a
+                  href="/terms"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowAuthModal(false);
+                    setActiveTab('terms');
+                  }}
+                  className="text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  Terms &amp; Conditions
+                </a>{' '}
+                and{' '}
+                <a
+                  href="/privacy"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowAuthModal(false);
+                    setActiveTab('privacy');
+                  }}
+                  className="text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  Privacy Policy
+                </a>
+                .
+              </p>
             </div>
           </div>
         </div>
@@ -7604,6 +7743,42 @@ export default function App() {
           ))}
         </div>
       )}
+
+      {/* Quiet Legal Site Footer */}
+      <footer className="border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black px-4 sm:px-6 py-3 text-xs text-neutral-500 dark:text-neutral-400 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span>© {new Date().getFullYear()} Nerve</span>
+          <span aria-hidden="true">·</span>
+          <a
+            href="mailto:everythinghts@gmail.com"
+            className="hover:text-black dark:hover:text-white transition-colors"
+          >
+            everythinghts@gmail.com
+          </a>
+        </div>
+        <div className="flex items-center gap-4">
+          <a
+            href="/privacy"
+            onClick={(e) => {
+              e.preventDefault();
+              setActiveTab('privacy');
+            }}
+            className="hover:text-black dark:hover:text-white underline-offset-4 hover:underline transition-colors whitespace-nowrap shrink-0"
+          >
+            Privacy Policy
+          </a>
+          <a
+            href="/terms"
+            onClick={(e) => {
+              e.preventDefault();
+              setActiveTab('terms');
+            }}
+            className="hover:text-black dark:hover:text-white underline-offset-4 hover:underline transition-colors whitespace-nowrap shrink-0"
+          >
+            Terms &amp; Conditions
+          </a>
+        </div>
+      </footer>
     </div>
   );
 }
