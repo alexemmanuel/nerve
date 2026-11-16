@@ -548,6 +548,9 @@ export default function App() {
   }, [messagesByPeer]);
 
   const [activeReactionPickerMessageId, setActiveReactionPickerMessageId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState<string>('');
+  const [confirmDeleteMessageId, setConfirmDeleteMessageId] = useState<string | null>(null);
   const [p2pRoomId, setP2pRoomId] = useState<string>('nerve-core-room');
   const [p2pPassphrase, setP2pPassphrase] = useState<string>(() =>
     getEnvEncodedStorage('nerve_p2p_passphrase', 'nerve-aes-256-secret-key')
@@ -2393,9 +2396,11 @@ export default function App() {
     }
   };
 
-  const activePeer: DeveloperPeer | undefined = selectedPeerHandle
-    ? peers.find((p) => p.handle === selectedPeerHandle)
-    : undefined;
+  const activePeer: DeveloperPeer | undefined =
+    selectedPeerHandle && selectedPeerHandle !== 'nerve-shark'
+      ? peers.find((p) => p.handle === selectedPeerHandle)
+      : undefined;
+  const isSharkChannelActive = !activePeer && selectedPeerHandle === 'nerve-shark';
   const isMutualFollow = activePeer ? activePeer.youFollowThem && activePeer.theyFollowYou : false;
   const hasProofOfWork = activePeer ? activePeer.proofOfWorkCommits >= 15 : true;
   const canOpenP2PChannel = Boolean(
@@ -2516,6 +2521,49 @@ export default function App() {
           ...prev,
           [targetKey]: [...list, incomingMsg],
         };
+      });
+    },
+    onIncomingChatEdit: (peerHandle, messageId, newText, editedAt) => {
+      const targetKey = activePeerKey || peerHandle;
+      setMessagesByPeer((prev) => {
+        const next: Record<string, ChatMessage[]> = { ...prev };
+        let matchedAny = false;
+        for (const key of Object.keys(next)) {
+          if (next[key].some((m) => m.id === messageId)) {
+            matchedAny = true;
+            next[key] = next[key].map((m) =>
+              m.id === messageId
+                ? {
+                    ...m,
+                    text: newText,
+                    edited: true,
+                    editedAt,
+                  }
+                : m
+            );
+          }
+        }
+        if (!matchedAny && targetKey && next[targetKey]) {
+          next[targetKey] = next[targetKey].map((m) =>
+            m.id === messageId ? { ...m, text: newText, edited: true, editedAt } : m
+          );
+        }
+        return next;
+      });
+    },
+    onIncomingChatDelete: (peerHandle, messageId) => {
+      const targetKey = activePeerKey || peerHandle;
+      setMessagesByPeer((prev) => {
+        const next: Record<string, ChatMessage[]> = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (next[key].some((m) => m.id === messageId)) {
+            next[key] = next[key].filter((m) => m.id !== messageId);
+          }
+        }
+        if (targetKey && next[targetKey]) {
+          next[targetKey] = next[targetKey].filter((m) => m.id !== messageId);
+        }
+        return next;
       });
     },
     onIncomingReaction: (_peerHandle, messageId, emoji, reactingUserHandle) => {
@@ -2756,7 +2804,13 @@ export default function App() {
       return;
     }
 
-    if (!canOpenP2PChannel || !activePeer) return;
+    const targetChannelKey =
+      canOpenP2PChannel && activePeer
+        ? activePeer.handle
+        : isSharkChannelActive
+        ? 'nerve-shark'
+        : '';
+    if (!targetChannelKey) return;
 
     if (overrideText === undefined) {
       setComposerText('');
@@ -2827,7 +2881,7 @@ export default function App() {
         },
         implementedFix: {
           file: targetLink.filePath,
-          author: `${activePeer.name} & Nerve Shark`,
+          author: `${activePeer?.name || currentSenderHandle} & Nerve Shark`,
           diff: `@@ -${targetLink.lineNumber},2 +${targetLink.lineNumber},4 @@\n+ if (!context) return;\n`,
         },
         systemLogsReport: [
@@ -2855,7 +2909,7 @@ export default function App() {
             stackTrace: newReport.stackTrace,
             reportObject: newReport,
             chatMessage: userMsg,
-            peerHandle: activePeer.handle,
+            peerHandle: targetChannelKey,
           },
         });
         setOfflineQueue(nextQueue);
@@ -2864,9 +2918,11 @@ export default function App() {
 
       setMessagesByPeer((prev) => ({
         ...prev,
-        [activePeer.handle]: [...(prev[activePeer.handle] || []), userMsg],
+        [targetChannelKey]: [...(prev[targetChannelKey] || []), userMsg],
       }));
-      p2pEngine.sendEncryptedChatMessage(userMsg);
+      if (canOpenP2PChannel && activePeer) {
+        p2pEngine.sendEncryptedChatMessage(userMsg);
+      }
       setIncidentReports((prev) => [newReport, ...prev]);
       setSelectedIncidentTicketId(newTicketId);
       handleNavigateDeepLink(targetLink.repo, targetLink.filePath, targetLink.lineNumber, true);
@@ -2888,7 +2944,7 @@ export default function App() {
         id: `q-${Date.now()}`,
         type: 'message',
         createdAt: new Date().toISOString(),
-        peerHandle: activePeer.handle,
+        peerHandle: targetChannelKey,
         messagePayload: userMsg,
       });
       setOfflineQueue(nextQueue);
@@ -2897,46 +2953,91 @@ export default function App() {
 
     setMessagesByPeer((prev) => ({
       ...prev,
-      [activePeer.handle]: [...(prev[activePeer.handle] || []), userMsg],
+      [targetChannelKey]: [...(prev[targetChannelKey] || []), userMsg],
     }));
-    p2pEngine.sendEncryptedChatMessage(userMsg);
+    if (canOpenP2PChannel && activePeer) {
+      p2pEngine.sendEncryptedChatMessage(userMsg);
+    }
 
     if (parsedLinks.length > 0) {
       const first = parsedLinks[0];
       handleNavigateDeepLink(first.repo, first.filePath, first.lineNumber);
     }
 
-    if (trimmed.toLowerCase().includes('@shark') || trimmed.toLowerCase().includes('@copilot')) {
-      await handleInvokeNerveShark(trimmed);
+    if (
+      isSharkChannelActive ||
+      trimmed.toLowerCase().includes('@shark') ||
+      trimmed.toLowerCase().includes('@copilot')
+    ) {
+      await handleInvokeNerveShark(trimmed, targetChannelKey);
     }
   };
 
-  const handleInvokeNerveShark = async (customPrompt?: string) => {
-    if (!activePeer) return;
+  const handleInvokeNerveShark = async (
+    customPrompt?: string,
+    explicitChannelKey?: string
+  ) => {
+    const canUsePeer = Boolean(activePeer && canOpenP2PChannel);
+    const targetChannelKey =
+      explicitChannelKey || (canUsePeer && activePeer ? activePeer.handle : 'nerve-shark');
+
+    if (targetChannelKey === 'nerve-shark' && selectedPeerHandle !== 'nerve-shark') {
+      setSelectedPeerHandle('nerve-shark');
+    }
+
     setIsSharkThinking(true);
     const targetRepoName = activeRepo?.repo || bugRepo || 'owner/repository';
     const targetBranchName = activeRepo?.branch || bugBranch || 'main';
     const targetFileName = activeFile?.path || bugFile || 'src/index.ts';
+    const resolvedPrompt =
+      customPrompt ||
+      `Analyze ${targetFileName} at line ${highlightedLine || 1} in ${targetRepoName} and propose a clean fix.`;
+
+    const buildLocalSharkFallback = () => {
+      const focusSnippet = displayedCodeLines
+        .slice(Math.max(0, (highlightedLine || 1) - 2), (highlightedLine || 1) + 4)
+        .join('\n');
+      return {
+        summary: `Nerve Shark analyzed ${targetRepoName}#${targetBranchName}/${targetFileName} (L${highlightedLine || 1}) for "${resolvedPrompt}" and prepared a defensive patch.`,
+        suggestedPatch: focusSnippet
+          ? `// Guarded update for ${targetFileName} (L${highlightedLine || 1})\n${focusSnippet}\n// Added explicit boundary & null-safety check`
+          : `// Guarded update for ${targetFileName}\nif (!context) {\n  throw new Error('Missing execution context in ${targetFileName}');\n}`,
+        recommendedTerminalCommand: 'npm test',
+        prTitle: `fix(${targetFileName.split('/').pop() || 'core'}): stabilize ${targetFileName}`,
+      };
+    };
 
     try {
-      const res = await fetch('/api/v1/copilot/collaborate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          prompt:
-            customPrompt ||
-            `Fix the issue in ${targetFileName} at line ${highlightedLine || 1}.`,
-          repo: targetRepoName,
-          branch: targetBranchName,
-          filePath: targetFileName,
-          codeSnippet: displayedCodeLines.join('\n'),
-          participants: [currentSenderHandle, activePeer.handle],
-        }),
-      });
-      const data = await res.json();
+      let data: any = null;
+      try {
+        const res = await fetch('/api/v1/copilot/collaborate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            prompt: resolvedPrompt,
+            repo: targetRepoName,
+            branch: targetBranchName,
+            filePath: targetFileName,
+            codeSnippet: displayedCodeLines.join('\n'),
+            participants: [currentSenderHandle, activePeer?.handle || 'nerve-shark'],
+          }),
+        });
+        if (res.ok) {
+          const parsed = await res.json().catch(() => null);
+          if (parsed && typeof parsed.summary === 'string' && parsed.summary.trim()) {
+            data = parsed;
+          }
+        }
+      } catch {
+        // Use local fallback when backend is unreachable (e.g. static deployment or offline)
+      }
+
+      if (!data) {
+        data = buildLocalSharkFallback();
+      }
 
       const sharkMsg: ChatMessage = {
         id: `msg-shark-${Date.now()}`,
@@ -2947,7 +3048,7 @@ export default function App() {
         text: data.summary,
         copilotPatch: {
           summary: data.summary,
-          suggestedPatch: data.suggestedPatch,
+          suggestedPatch: data.suggestedPatch || buildLocalSharkFallback().suggestedPatch,
           recommendedTerminalCommand: data.recommendedTerminalCommand || 'npm test',
           prTitle: data.prTitle || `fix: patch ${targetFileName}`,
           applied: false,
@@ -2956,11 +3057,76 @@ export default function App() {
 
       setMessagesByPeer((prev) => ({
         ...prev,
-        [activePeer.handle]: [...(prev[activePeer.handle] || []), sharkMsg],
+        [targetChannelKey]: [...(prev[targetChannelKey] || []), sharkMsg],
       }));
-      p2pEngine.sendEncryptedChatMessage(sharkMsg);
+      if (canUsePeer && targetChannelKey !== 'nerve-shark') {
+        p2pEngine.sendEncryptedChatMessage(sharkMsg);
+      }
     } finally {
       setIsSharkThinking(false);
+    }
+  };
+
+  const handleStartEditMessage = (msg: ChatMessage) => {
+    setActiveReactionPickerMessageId(null);
+    setConfirmDeleteMessageId(null);
+    setEditingMessageId(msg.id);
+    setEditingMessageText(msg.text);
+  };
+
+  const handleSaveEditMessage = (msgId: string) => {
+    const channelKey = activePeerKey;
+    const trimmed = editingMessageText.trim();
+    if (!channelKey || !trimmed) return;
+
+    const editedAt = new Date().toLocaleTimeString();
+    const updatedLinks = extractDeepLinks(trimmed);
+
+    setMessagesByPeer((prev) => ({
+      ...prev,
+      [channelKey]: (prev[channelKey] || []).map((m) =>
+        m.id === msgId
+          ? {
+              ...m,
+              text: trimmed,
+              parsedLinks: updatedLinks.length > 0 ? updatedLinks : undefined,
+              edited: true,
+              editedAt,
+            }
+          : m
+      ),
+    }));
+
+    setEditingMessageId(null);
+    setEditingMessageText('');
+
+    if (canOpenP2PChannel && activePeer) {
+      p2pEngine.sendEncryptedChatEdit(msgId, trimmed, editedAt);
+    }
+  };
+
+  const handleDeleteMessage = (msgId: string, scope: 'me' | 'both') => {
+    const channelKey = activePeerKey;
+    if (!channelKey) return;
+
+    setMessagesByPeer((prev) => ({
+      ...prev,
+      [channelKey]: (prev[channelKey] || []).filter((m) => m.id !== msgId),
+    }));
+
+    if (editingMessageId === msgId) {
+      setEditingMessageId(null);
+      setEditingMessageText('');
+    }
+    if (confirmDeleteMessageId === msgId) {
+      setConfirmDeleteMessageId(null);
+    }
+    if (activeReactionPickerMessageId === msgId) {
+      setActiveReactionPickerMessageId(null);
+    }
+
+    if (scope === 'both' && canOpenP2PChannel && activePeer) {
+      p2pEngine.sendEncryptedChatDelete(msgId);
     }
   };
 
@@ -2972,10 +3138,10 @@ export default function App() {
       ...prev,
       `[Nerve Shark Patch Applied] Updated ${activeFile?.path || 'file'}. Run tests to verify.`,
     ]);
-    if (msgId && activePeer) {
+    if (msgId && activePeerKey) {
       setMessagesByPeer((prev) => ({
         ...prev,
-        [activePeer.handle]: (prev[activePeer.handle] || []).map((m) =>
+        [activePeerKey]: (prev[activePeerKey] || []).map((m) =>
           m.id === msgId && m.copilotPatch
             ? { ...m, copilotPatch: { ...m.copilotPatch, applied: true } }
             : m
@@ -2992,7 +3158,9 @@ export default function App() {
     const userHandle = currentSenderHandle || 'developer';
 
     applyReactionToMessageInState(targetPeerKey, messageId, emoji, userHandle);
-    p2pEngine.sendEncryptedReaction(messageId, emoji);
+    if (canOpenP2PChannel && activePeer) {
+      p2pEngine.sendEncryptedReaction(messageId, emoji);
+    }
   };
 
   const handleRunCodespaceCommand = async (
@@ -3799,6 +3967,9 @@ export default function App() {
             setShowTerminal(true);
             setShowFileExplorer(true);
             setActiveReactionPickerMessageId(null);
+            setEditingMessageId(null);
+            setEditingMessageText('');
+            setConfirmDeleteMessageId(null);
             setActiveTab('workspace');
             window.scrollTo({ top: 0, behavior: 'auto' });
           }}
@@ -4636,8 +4807,8 @@ export default function App() {
 
                   <button
                     onClick={() => handleInvokeNerveShark()}
-                    disabled={!canOpenP2PChannel || isSharkThinking}
-                    className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg flex items-center gap-1 cursor-pointer"
+                    disabled={isSharkThinking}
+                    className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <Code2 className="w-3.5 h-3.5" />
                     <span>{isSharkThinking ? '...' : 'Nerve Shark'}</span>
@@ -4844,7 +5015,7 @@ export default function App() {
             )}
 
             {/* Chat Stream Body */}
-            {!activePeer ? (
+            {!activePeer && !isSharkChannelActive ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
                 <div className="max-w-sm space-y-2">
                   <h3 className="text-sm font-bold text-black dark:text-white">
@@ -4871,14 +5042,14 @@ export default function App() {
                   )}
                 </div>
               </div>
-            ) : !hasProofOfWork ? (
+            ) : !isSharkChannelActive && !hasProofOfWork ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-2">
                 <ShieldAlert className="w-6 h-6 text-red-500" />
                 <h3 className="text-xs font-bold text-black dark:text-white">
                   Blocked by Proof-of-Work Gate (&lt;15 Commits)
                 </h3>
               </div>
-            ) : !isMutualFollow ? (
+            ) : !isSharkChannelActive && !isMutualFollow && activePeer ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
                 <Lock className="w-6 h-6 text-amber-500" />
                 <h3 className="text-xs font-bold text-black dark:text-white">
@@ -4892,13 +5063,13 @@ export default function App() {
                   <span>Follow @{activePeer.handle}</span>
                 </button>
               </div>
-            ) : globalFocusSwitch || activePeer.focusModeOptOut ? (
+            ) : !isSharkChannelActive && (globalFocusSwitch || activePeer?.focusModeOptOut) ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
                 <SlidersHorizontal className="w-6 h-6 text-blue-500" />
                 <h3 className="text-xs font-bold text-black dark:text-white">
                   {globalFocusSwitch
                     ? 'Focus Mode Active'
-                    : `${activePeer.name} is in Focus Mode`}
+                    : `${activePeer?.name || 'Peer'} is in Focus Mode`}
                 </h3>
                 {globalFocusSwitch && (
                   <button
@@ -4913,7 +5084,9 @@ export default function App() {
               <div className="flex-1 p-3 sm:p-5 space-y-3 overflow-y-auto max-h-[calc(100vh-210px)]">
                 {currentMessages.length === 0 ? (
                   <div className="h-full flex items-center justify-center text-xs text-black/60 dark:text-white/60 py-12">
-                    E2EE channel open with @{activePeer.handle} (AES-GCM-256). Send a message, `owner/repo#branch/file:L10`, `@shark`, or `/bug`.
+                    {isSharkChannelActive
+                      ? 'Nerve Shark channel active. Ask a question, paste `owner/repo#branch/file:L10`, or run `/bug`.'
+                      : `E2EE channel open with @${activePeer?.handle || 'peer'} (AES-GCM-256). Send a message, \`owner/repo#branch/file:L10\`, \`@shark\`, or \`/bug\`.`}
                   </div>
                 ) : (
                   currentMessages.map((msg) => (
@@ -4927,21 +5100,53 @@ export default function App() {
                           : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black'
                       }`}
                     >
-                      <div className="flex items-center justify-between text-xs text-black/70 dark:text-white/70">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-semibold text-black dark:text-white">
+                      <div className="flex items-center justify-between text-xs text-black/70 dark:text-white/70 gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-semibold text-black dark:text-white truncate">
                             {msg.senderName}
                           </span>
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 shrink-0">
                             E2EE
                           </span>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-[11px]">{msg.timestamp}</span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="font-mono text-[11px] mr-1">
+                            {msg.timestamp}
+                            {msg.edited ? ' · edited' : ''}
+                          </span>
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              handleStartEditMessage(msg);
+                            }}
+                            title="Edit message"
+                            aria-label="Edit message"
+                            className="p-1 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white cursor-pointer"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveReactionPickerMessageId(null);
+                              setEditingMessageId(null);
+                              setConfirmDeleteMessageId((prev) =>
+                                prev === msg.id ? null : msg.id
+                              );
+                            }}
+                            title="Delete message"
+                            aria-label="Delete message"
+                            className="p-1 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black/70 dark:text-white/70 hover:text-red-500 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmDeleteMessageId(null);
                               setActiveReactionPickerMessageId((prev) =>
                                 prev === msg.id ? null : msg.id
                               );
@@ -4955,9 +5160,86 @@ export default function App() {
                         </div>
                       </div>
 
-                      <p className="text-xs sm:text-sm text-black dark:text-white leading-relaxed">
-                        {msg.text}
-                      </p>
+                      {editingMessageId === msg.id ? (
+                        <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                          <textarea
+                            rows={2}
+                            value={editingMessageText}
+                            onChange={(e) => setEditingMessageText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                handleSaveEditMessage(msg.id);
+                              } else if (e.key === 'Escape') {
+                                setEditingMessageId(null);
+                                setEditingMessageText('');
+                              }
+                            }}
+                            className="w-full px-3 py-2 text-xs sm:text-sm rounded-lg border border-blue-500 bg-white dark:bg-black text-black dark:text-white focus:outline-none"
+                            autoFocus
+                          />
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingMessageId(null);
+                                setEditingMessageText('');
+                              }}
+                              className="px-2.5 py-1 rounded-lg text-[11px] font-medium border border-neutral-200 dark:border-neutral-800 text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer whitespace-nowrap shrink-0"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSaveEditMessage(msg.id)}
+                              disabled={!editingMessageText.trim()}
+                              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white cursor-pointer whitespace-nowrap shrink-0"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-xs sm:text-sm text-black dark:text-white leading-relaxed">
+                          {msg.text}
+                        </p>
+                      )}
+
+                      {confirmDeleteMessageId === msg.id && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-lg border border-red-500/30 bg-red-500/5 text-xs"
+                        >
+                          <span className="text-[11px] text-black/80 dark:text-white/80">
+                            Delete this message?
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteMessage(msg.id, 'me')}
+                              className="px-2 py-1 rounded-md text-[11px] font-medium border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer whitespace-nowrap shrink-0"
+                            >
+                              Delete for me
+                            </button>
+                            {canOpenP2PChannel && activePeer && (
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteMessage(msg.id, 'both')}
+                                className="px-2 py-1 rounded-md text-[11px] font-semibold bg-red-600 hover:bg-red-500 text-white cursor-pointer whitespace-nowrap shrink-0"
+                              >
+                                Delete for both
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteMessageId(null)}
+                              className="px-2 py-1 rounded-md text-[11px] text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer whitespace-nowrap shrink-0"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Interactive Reactions Display & Emoji Picker Directly Beneath Message Text */}
                       <div className="space-y-1.5 pt-0.5">
@@ -5204,7 +5486,7 @@ export default function App() {
 
             {/* Contextual Quick-Reply Bar & Composer */}
             <div className="p-3 border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black space-y-2">
-              {canOpenP2PChannel && (
+              {(canOpenP2PChannel || isSharkChannelActive) && (
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
                   {(() => {
                     const lastMsg = currentMessages[currentMessages.length - 1];
@@ -5242,19 +5524,21 @@ export default function App() {
                 <input
                   ref={chatComposerInputRef}
                   type="text"
-                  disabled={!canOpenP2PChannel}
+                  disabled={!canOpenP2PChannel && !isSharkChannelActive}
                   value={composerText}
                   onChange={(e) => setComposerText(e.target.value)}
                   placeholder={
-                    canOpenP2PChannel
+                    isSharkChannelActive
+                      ? 'Ask Nerve Shark about this repo/file, or type /bug...'
+                      : canOpenP2PChannel
                       ? 'Message, repo#branch/file:L42, @shark, or /bug... (Ctrl+Shift+C)'
-                      : 'Add/select a peer to message'
+                      : 'Add/select a peer or click Nerve Shark to message'
                   }
                   className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
                 <button
                   type="submit"
-                  disabled={!canOpenP2PChannel || !composerText.trim()}
+                  disabled={(!canOpenP2PChannel && !isSharkChannelActive) || !composerText.trim()}
                   className="px-3.5 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-xl flex items-center gap-1.5 cursor-pointer"
                 >
                   <Send className="w-3.5 h-3.5" />

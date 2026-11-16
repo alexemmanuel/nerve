@@ -395,6 +395,25 @@ const LIVE_ENDPOINTS = [
       ],
     },
   },
+  {
+    id: 'p2p_message_lifecycle',
+    label: '24. Msg Edit/Delete',
+    path: '/api/v1/p2p/message-lifecycle',
+    defaultBody: {
+      action: 'delete',
+      scope: 'both',
+      messageId: 'msg_01',
+      roomId: 'global-dev-room',
+    },
+  },
+  {
+    id: 'users_by_email',
+    label: '25. Email @users',
+    path: '/api/v1/users/by-email',
+    defaultBody: {
+      email: 'developer@github.com',
+    },
+  },
 ];
 
 // Safe ISO timestamp formatter preventing RangeError: Invalid time value crashes
@@ -506,7 +525,7 @@ export const Integration: React.FC<IntegrationProps> = ({
   );
 
   // Third-Party Engine Callout Gateway State
-  const [selectedEngineModule, setSelectedEngineModule] = useState<string>('copilot');
+  const [selectedEngineModule, setSelectedEngineModule] = useState<string>('nerve_shark');
   const [engineCalloutOutput, setEngineCalloutOutput] = useState<string>('');
   const [isCallingEngine, setIsCallingEngine] = useState<boolean>(false);
   const [copiedEngineFetch, setCopiedEngineFetch] = useState<boolean>(false);
@@ -2110,14 +2129,22 @@ const data = await response.json();`;
               'sovereignty.read',
               'sovereignty.write',
               'p2p.messaging',
+              'p2p.message_edit',
+              'p2p.message_delete',
               'p2p.reactions',
+              'p2p.webrtc_signaling',
+              'p2p.broadcast_fallback',
               'p2p.e2ee_aes_gcm_256',
+              'p2p.pbkdf2_100k',
               'p2p.chunked_file_stream',
               'p2p.datachannel_16kb_backpressure',
+              'p2p.terminal_log_stream',
+              'p2p.json_inspector',
               'p2p.quick_reply',
               'p2p.share_snippet',
               'p2p.repo_autodeploy',
               'peers.search_and_delete',
+              'users.email_lookup',
               'pull_request.diff_review',
               'syntax.parse',
               'syntax.highlighter',
@@ -2144,6 +2171,7 @@ const data = await response.json();`;
               'ci.mttr',
               'ci.build_history',
               'copilot.collaborate',
+              'shark.collaborate',
               'incidents.dispatch',
               'incidents.ai_log_triage',
               'incidents.line_numbered_log_triage',
@@ -2153,11 +2181,13 @@ const data = await response.json();`;
               'integration.gmail_gate_autolock',
               'firebase.firestore_sync',
               'firebase.security_rules',
-              'auth.github_provider_oauth',
-              'auth.google_provider_oauth',
-              'github.ssh_keys_manage',
+              'offline.queue_sync',
               'offline.queue_auto_flush',
               'auth.multi_provider',
+              'auth.github_provider_oauth',
+              'auth.google_provider_oauth',
+              'auth.google_oauth',
+              'github.ssh_keys_manage',
             ].map((scope) => (
               <span
                 key={scope}
@@ -2208,7 +2238,9 @@ const data = await response.json();`;
               onChange={(e) => setSelectedEngineModule(e.target.value)}
               className="px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 cursor-pointer"
             >
-              <option value="copilot">Engine: copilot (AI Triage & Patch)</option>
+              <option value="nerve_shark">Engine: nerve_shark (Nerve Shark gemini-4-hydrogen)</option>
+              <option value="p2p_message_lifecycle">Engine: p2p_message_lifecycle (E2EE Edit & Delete for Me/Both)</option>
+              <option value="users_by_email">Engine: users_by_email (Email-Linked @users Lookup)</option>
               <option value="triage">Engine: triage (Automated CI Log Triage)</option>
               <option value="p2p_datachannel">Engine: p2p_datachannel (WebRTC 16KB Stream & Backpressure)</option>
               <option value="terminal_log_export">Engine: terminal_log_export (Raw .txt Session Log Download)</option>

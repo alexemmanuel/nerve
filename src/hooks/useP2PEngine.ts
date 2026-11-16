@@ -40,6 +40,8 @@ export interface P2PWirePacket {
   packetId: string;
   type:
     | 'ENCRYPTED_CHAT'
+    | 'ENCRYPTED_CHAT_EDIT'
+    | 'ENCRYPTED_CHAT_DELETE'
     | 'ENCRYPTED_REACTION'
     | 'FILE_META'
     | 'FILE_CHUNK'
@@ -102,6 +104,8 @@ export interface UseP2PEngineOptions {
   localDisplayName: string;
   transportMode: SignalingTransportMode;
   onIncomingChatMessage?: (peerHandle: string, msg: ChatMessage) => void;
+  onIncomingChatEdit?: (peerHandle: string, messageId: string, newText: string, editedAt: string) => void;
+  onIncomingChatDelete?: (peerHandle: string, messageId: string) => void;
   onIncomingReaction?: (peerHandle: string, messageId: string, emoji: string, senderHandle: string) => void;
 }
 
@@ -112,6 +116,8 @@ export function useP2PEngine({
   localDisplayName,
   transportMode,
   onIncomingChatMessage,
+  onIncomingChatEdit,
+  onIncomingChatDelete,
   onIncomingReaction,
 }: UseP2PEngineOptions) {
   const [peerId] = useState<string>(() => `peer_${Math.random().toString(36).slice(2, 10)}`);
@@ -152,11 +158,15 @@ export function useP2PEngine({
   const seenPacketIdsRef = useRef<Set<string>>(new Set());
 
   const onIncomingChatRef = useRef(onIncomingChatMessage);
+  const onIncomingChatEditRef = useRef(onIncomingChatEdit);
+  const onIncomingChatDeleteRef = useRef(onIncomingChatDelete);
   const onIncomingReactionRef = useRef(onIncomingReaction);
   useEffect(() => {
     onIncomingChatRef.current = onIncomingChatMessage;
+    onIncomingChatEditRef.current = onIncomingChatEdit;
+    onIncomingChatDeleteRef.current = onIncomingChatDelete;
     onIncomingReactionRef.current = onIncomingReaction;
-  }, [onIncomingChatMessage, onIncomingReaction]);
+  }, [onIncomingChatMessage, onIncomingChatEdit, onIncomingChatDelete, onIncomingReaction]);
 
   // Load persisted manifests & terminal stream logs from IndexedDB on mount
   useEffect(() => {
@@ -225,6 +235,23 @@ export function useP2PEngine({
             ...chatObj,
             senderRole: 'peer',
           });
+        } else if (packet.type === 'ENCRYPTED_CHAT_EDIT') {
+          const decryptedJson = await decryptStringPayload(activeKey.key, packet.envelope);
+          const editData = JSON.parse(decryptedJson) as {
+            messageId: string;
+            newText: string;
+            editedAt: string;
+          };
+          onIncomingChatEditRef.current?.(
+            packet.senderHandle,
+            editData.messageId,
+            editData.newText,
+            editData.editedAt
+          );
+        } else if (packet.type === 'ENCRYPTED_CHAT_DELETE') {
+          const decryptedJson = await decryptStringPayload(activeKey.key, packet.envelope);
+          const delData = JSON.parse(decryptedJson) as { messageId: string };
+          onIncomingChatDeleteRef.current?.(packet.senderHandle, delData.messageId);
         } else if (packet.type === 'ENCRYPTED_REACTION') {
           const decryptedJson = await decryptStringPayload(activeKey.key, packet.envelope);
           const reactionData = JSON.parse(decryptedJson) as {
@@ -848,6 +875,62 @@ export function useP2PEngine({
     [peerId, localHandle, localDisplayName, roomId, sendRawWirePacket]
   );
 
+  // 2b. Send E2EE Chat Edit (syncs edit for both users)
+  const sendEncryptedChatEdit = useCallback(
+    async (messageId: string, newText: string, editedAt: string) => {
+      const activeKey = keyMaterialRef.current;
+      if (!activeKey) return;
+
+      const envelope = await encryptStringPayload(
+        activeKey.key,
+        JSON.stringify({ messageId, newText, editedAt }),
+        activeKey.saltBase64
+      );
+
+      const packet: P2PWirePacket = {
+        packetId: `edit_${messageId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: 'ENCRYPTED_CHAT_EDIT',
+        senderId: peerId,
+        senderHandle: localHandle,
+        senderName: localDisplayName,
+        roomId,
+        timestamp: Date.now(),
+        envelope,
+      };
+
+      sendRawWirePacket(packet);
+    },
+    [peerId, localHandle, localDisplayName, roomId, sendRawWirePacket]
+  );
+
+  // 2c. Send E2EE Chat Delete (syncs deletion for both users)
+  const sendEncryptedChatDelete = useCallback(
+    async (messageId: string) => {
+      const activeKey = keyMaterialRef.current;
+      if (!activeKey) return;
+
+      const envelope = await encryptStringPayload(
+        activeKey.key,
+        JSON.stringify({ messageId }),
+        activeKey.saltBase64
+      );
+
+      const packet: P2PWirePacket = {
+        packetId: `del_${messageId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: 'ENCRYPTED_CHAT_DELETE',
+        senderId: peerId,
+        senderHandle: localHandle,
+        senderName: localDisplayName,
+        roomId,
+        timestamp: Date.now(),
+        envelope,
+      };
+
+      sendRawWirePacket(packet);
+    },
+    [peerId, localHandle, localDisplayName, roomId, sendRawWirePacket]
+  );
+
   // 3. Chunked Binary File Streaming Pipeline (16KB blocks + RTCDataChannel Backpressure Control)
   const sendEncryptedFileTransfer = useCallback(
     async (file: File) => {
@@ -1094,6 +1177,8 @@ export function useP2PEngine({
     inspectedPayloads,
     initiateWebRtcHandshake,
     sendEncryptedChatMessage,
+    sendEncryptedChatEdit,
+    sendEncryptedChatDelete,
     sendEncryptedReaction,
     sendEncryptedFileTransfer,
     sendEncryptedTerminalLog,

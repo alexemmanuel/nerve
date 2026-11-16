@@ -64,6 +64,8 @@ export interface ChatMessage {
   senderRole: 'peer' | 'self' | 'copilot';
   timestamp: string;
   text: string;
+  edited?: boolean;
+  editedAt?: string;
   reactions?: ChatReaction[];
   parsedLinks?: Array<{
     raw: string;
@@ -152,6 +154,8 @@ export function PeerFileAndChatChannel({ roomId, passphrase, localHandle }: {
     bufferedAmountBytes,
     backpressurePaused,
     sendEncryptedChatMessage,
+    sendEncryptedChatEdit,
+    sendEncryptedChatDelete,
     sendEncryptedFileTransfer,
   } = useP2PDataChannel({
     roomId,
@@ -161,8 +165,17 @@ export function PeerFileAndChatChannel({ roomId, passphrase, localHandle }: {
     transportMode: "hybrid",
   });
 
-  // Streams file in strict 16KB (${'16384'}B) chunks, pausing when bufferedAmount > 256KB
-  return { rtcState, dataChannelState, bufferedAmountBytes, backpressurePaused, sendEncryptedChatMessage, sendEncryptedFileTransfer };
+  // Streams files in 16KB chunks, pauses when bufferedAmount > 256KB, and syncs E2EE edits & Delete for Both
+  return {
+    rtcState,
+    dataChannelState,
+    bufferedAmountBytes,
+    backpressurePaused,
+    sendEncryptedChatMessage,
+    sendEncryptedChatEdit,
+    sendEncryptedChatDelete,
+    sendEncryptedFileTransfer,
+  };
 }`,
   },
   {
@@ -381,6 +394,45 @@ export async function authenticateWithGoogle() {
   });
   const data = await res.json();
   return { flushedCount: data.flushedCount, success: data.success, timestamp: data.timestamp };
+}`,
+  },
+  {
+    id: 'nerve-shark-sdk',
+    platformName: 'Nerve Shark AI SDK',
+    category: 'Standalone & Peer AI Collaboration',
+    targetUseCase: 'Invokes Nerve Shark (gemini-4-hydrogen) with or without a selected peer contributor for real-time code analysis and patches',
+    protocolEndpoint: 'POST /api/v1/copilot/collaborate',
+    language: 'TypeScript',
+    architectureNotes: 'Returns structured patches, verification commands, and PR titles via nerve.shark.v1 with local fallback when offline or static.',
+    codeSnippet: `export async function invokeNerveShark(apiKey: string, prompt: string, repo: string, filePath: string, codeSnippet?: string) {
+  const res = await fetch("https://your-domain.com/api/v1/copilot/collaborate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
+    body: JSON.stringify({ prompt, repo, branch: "main", filePath, codeSnippet }),
+  });
+  return await res.json(); // protocol: "nerve.shark.v1", model: "gemini-4-hydrogen"
+}`,
+  },
+  {
+    id: 'email-users-discovery-sdk',
+    platformName: 'Email @users & Msg Lifecycle SDK',
+    category: 'Identity Lookup & E2EE Message Control',
+    targetUseCase: 'Resolves @users linked to a signed-in email and synchronizes encrypted chat edits or deletes (Delete for Me / Both)',
+    protocolEndpoint: 'POST /api/v1/users/by-email · POST /api/v1/p2p/message-lifecycle',
+    language: 'TypeScript',
+    architectureNotes: 'Supports non-auto-selecting contributor workflows and end-to-end encrypted message edit/delete packets.',
+    codeSnippet: `export async function lookupUsersAndSyncMessage(apiKey: string, email: string, messageId: string) {
+  const usersRes = await fetch("https://your-domain.com/api/v1/users/by-email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
+    body: JSON.stringify({ email }),
+  });
+  const lifecycleRes = await fetch("https://your-domain.com/api/v1/p2p/message-lifecycle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
+    body: JSON.stringify({ action: "delete", scope: "both", messageId }),
+  });
+  return { connectedUsers: await usersRes.json(), messageSync: await lifecycleRes.json() };
 }`,
   },
 ];

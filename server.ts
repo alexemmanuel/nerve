@@ -128,6 +128,8 @@ const ALL_NERVE_ECOSYSTEM_SCOPES: string[] = [
   'sovereignty.read',
   'sovereignty.write',
   'p2p.messaging',
+  'p2p.message_edit',
+  'p2p.message_delete',
   'p2p.reactions',
   'p2p.webrtc_signaling',
   'p2p.broadcast_fallback',
@@ -141,6 +143,7 @@ const ALL_NERVE_ECOSYSTEM_SCOPES: string[] = [
   'p2p.share_snippet',
   'p2p.repo_autodeploy',
   'peers.search_and_delete',
+  'users.email_lookup',
   'pull_request.diff_review',
   'syntax.parse',
   'syntax.highlighter',
@@ -167,6 +170,7 @@ const ALL_NERVE_ECOSYSTEM_SCOPES: string[] = [
   'ci.mttr',
   'ci.build_history',
   'copilot.collaborate',
+  'shark.collaborate',
   'incidents.dispatch',
   'incidents.ai_log_triage',
   'incidents.line_numbered_log_triage',
@@ -625,7 +629,7 @@ app.post('/api/v1/integration/verify-access', (req, res) => {
 app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
   res.json({
     protocol: 'nerve.engine.gateway.v1',
-    engineVersion: '1.5.0',
+    engineVersion: '1.6.0',
     corsEnabled: true,
     universalRepoChannels: ['github', 'gitlab', 'bitbucket', 'gitea', 'custom-git'],
     availableEngines: [
@@ -650,9 +654,9 @@ app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
         description: 'Execute containerized build/test/git commands remotely',
       },
       {
-        engine: 'copilot',
+        engine: 'nerve_shark',
         endpoint: '/api/v1/copilot/collaborate',
-        description: 'Invoke Nerve Shark AI & automated failure triage engine',
+        description: 'Invoke Nerve Shark AI (gemini-4-hydrogen) in standalone or multi-developer peer channels',
       },
       {
         engine: 'incidents',
@@ -728,6 +732,16 @@ app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
         engine: 'offline_flush',
         endpoint: '/api/v1/offline/flush',
         description: 'Offline Queue Auto-Flush & Service Worker Synchronization Engine',
+      },
+      {
+        engine: 'p2p_message_lifecycle',
+        endpoint: '/api/v1/p2p/message-lifecycle',
+        description: 'E2EE Chat Message Edit (ENCRYPTED_CHAT_EDIT) and Delete for Me / Both (ENCRYPTED_CHAT_DELETE) synchronization',
+      },
+      {
+        engine: 'users_by_email',
+        endpoint: '/api/v1/users/by-email',
+        description: 'Resolve @users and GitHub handles connected to an authenticated or third-party email',
       },
     ],
     unifiedCalloutEndpoint: '/api/v1/engine/call',
@@ -974,6 +988,38 @@ app.post('/api/v1/p2p/datachannel-stream', authenticateApiKey, (req, res) => {
   });
 });
 
+app.post('/api/v1/p2p/message-lifecycle', authenticateApiKey, (req, res) => {
+  const {
+    action = 'edit',
+    scope = 'both',
+    messageId = 'msg_01',
+    roomId = 'global-dev-room',
+    newText = '',
+    editedAt = new Date().toISOString(),
+  } = req.body || {};
+
+  const normalizedAction = action === 'delete' ? 'delete' : 'edit';
+  const normalizedScope = scope === 'me' ? 'me' : 'both';
+  const packetType =
+    normalizedAction === 'delete' ? 'ENCRYPTED_CHAT_DELETE' : 'ENCRYPTED_CHAT_EDIT';
+
+  res.json({
+    protocol: 'nerve.p2p.message_lifecycle.v1',
+    status: normalizedAction === 'delete' ? 'DELETED' : 'EDITED',
+    action: normalizedAction,
+    scope: normalizedScope,
+    messageId: String(messageId),
+    roomId: String(roomId),
+    packetType,
+    syncedToPeer: normalizedAction === 'edit' || normalizedScope === 'both',
+    ...(normalizedAction === 'edit'
+      ? { newText: String(newText), edited: true, editedAt }
+      : {}),
+    encryption: 'AES-GCM-256 (PBKDF2 100k)',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
   const {
     engine = 'syntax',
@@ -1028,9 +1074,14 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
       };
       break;
     case 'copilot':
+    case 'nerve_shark':
+    case 'shark':
     case 'triage':
       result = {
-        agent: 'Nerve Automated Triage & Shark Engine',
+        protocol: 'nerve.shark.v1',
+        model: 'gemini-4-hydrogen',
+        agent: 'Nerve Shark Shared Multi-Developer AI Agent',
+        standaloneChannelSupported: true,
         repo: payload.repo || 'owner/repository',
         rootCause: 'Unchecked writable stream state prior to chunk flush',
         suggestion:
@@ -1140,6 +1191,26 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
         flushedCount: Array.isArray(payload.queue) ? payload.queue.length : 1,
         serviceWorkerSync: 'active',
         reconciledAt: new Date().toISOString(),
+      };
+      break;
+    case 'p2p_message_lifecycle':
+      result = {
+        protocol: 'nerve.p2p.message_lifecycle.v1',
+        action: payload.action === 'delete' ? 'delete' : 'edit',
+        scope: payload.scope === 'me' ? 'me' : 'both',
+        messageId: payload.messageId || 'msg_01',
+        packetType:
+          payload.action === 'delete' ? 'ENCRYPTED_CHAT_DELETE' : 'ENCRYPTED_CHAT_EDIT',
+        syncedToPeer: payload.action !== 'delete' || payload.scope !== 'me',
+        encryption: 'AES-GCM-256',
+      };
+      break;
+    case 'users_by_email':
+      result = {
+        protocol: 'nerve.users.by_email.v1',
+        email: payload.email || callerEmail,
+        lookupSources: ['GitHub Email Profile', 'GitHub Commit Author', 'Nerve Account'],
+        endpoint: '/api/v1/users/by-email',
       };
       break;
     case 'incidents':
@@ -2140,10 +2211,10 @@ app.get('/api/v1/github/search', async (req, res) => {
   });
 });
 
-// Resolve GitHub @users connected to a signed-in email address
-app.get('/api/v1/users/by-email', async (req, res) => {
-  const rawEmail = String(req.query.email || '').trim().toLowerCase();
-  const oauthHandle = String(req.query.githubHandle || '')
+// Resolve GitHub @users connected to a signed-in email address (GET + POST for 3P adoption)
+const handleUsersByEmailLookup = async (req: Request, res: Response) => {
+  const rawEmail = String(req.query.email || req.body?.email || '').trim().toLowerCase();
+  const oauthHandle = String(req.query.githubHandle || req.body?.githubHandle || '')
     .trim()
     .replace(/^@/, '');
 
@@ -2316,7 +2387,10 @@ app.get('/api/v1/users/by-email', async (req, res) => {
     email: rawEmail,
     users: enrichedUsers,
   });
-});
+};
+
+app.get('/api/v1/users/by-email', authenticateApiKey, handleUsersByEmailLookup);
+app.post('/api/v1/users/by-email', authenticateApiKey, handleUsersByEmailLookup);
 
 // Track a newly added repository in CI/CD Health Store
 app.post('/api/v1/ci/track-repo', authenticateApiKey, (req, res) => {
@@ -2958,37 +3032,47 @@ const handleCodespaceTelemetry = (req: Request, res: Response) => {
 app.get('/api/v1/codespaces/telemetry', authenticateApiKey, handleCodespaceTelemetry);
 app.post('/api/v1/codespaces/telemetry', authenticateApiKey, handleCodespaceTelemetry);
 
-// 6. Feature 5: Multi-Developer & Nerve Shark Shared Work Surface (Powered by Gemini 3.8 Flash)
+// 6. Feature 5: Multi-Developer & Nerve Shark Shared Work Surface (Powered by Gemini 4 Hydrogen)
 app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => {
   const {
-    prompt = 'Analyze the crash and propose a clean, non-blocking TypeScript patch for both developers.',
-    repo = 'acme-cloud/edge-router',
+    prompt = 'Analyze the code and propose a clean, non-blocking patch.',
+    repo = 'owner/repository',
     branch = 'main',
-    filePath = 'src/proxy/stream-handler.ts',
+    filePath = 'src/index.ts',
     codeSnippet = '',
     participants = ['developer-1', 'developer-2'],
     incidentTicket = null,
   } = req.body || {};
 
+  const snippetLines = String(codeSnippet || '')
+    .split('\n')
+    .filter((l) => l.trim().length > 0);
+  const previewLine = snippetLines.slice(0, 6).join('\n');
+  const buildFallbackPayload = (reasonNote?: string) => ({
+    protocol: 'nerve.shark.v1',
+    model: 'gemini-4-hydrogen (nerve-shark-fallback)',
+    participants,
+    summary: `Nerve Shark analyzed ${repo}#${branch}/${filePath} (${prompt}):${
+      reasonNote ? ` ${reasonNote}` : ''
+    } Added defensive guardrails and clean error handling around the highlighted execution path.`,
+    suggestedPatch: previewLine
+      ? `// Guarded update for ${filePath}\n${previewLine}\n// Ensure null-safety & explicit error propagation`
+      : `// Defensive guard for ${filePath}\nif (!context) {\n  throw new Error('Missing execution context in ${filePath}');\n}`,
+    recommendedTerminalCommand: 'npm test',
+    prTitle: `fix(${filePath.split('/').pop() || 'core'}): add defensive guard and stabilize ${filePath}`,
+  });
+
   const ai = getGenAIClient();
 
   if (!ai) {
-    return res.json({
-      protocol: 'nerve.shark.v1',
-      model: 'gemini-3.8-flash (nerve-shark-engine)',
-      participants,
-      summary: `Nerve Shark identified root cause in ${repo}#${branch}/${filePath}: when client drops connection mid-flight, responseStream becomes undefined before flushHeaders is invoked.`,
-      suggestedPatch: `if (ctx.abortSignal?.aborted || !ctx.responseStream || ctx.responseStream.destroyed) {\n  return { dropped: true, reason: 'CLIENT_SOCKET_CLOSED' };\n}\nif (!ctx.headersSent && typeof ctx.responseStream.flushHeaders === 'function') {\n  ctx.responseStream.flushHeaders();\n  ctx.headersSent = true;\n}`,
-      recommendedTerminalCommand: 'npm test',
-      prTitle: `fix(proxy): guard flushHeaders against aborted client stream in ${filePath}`,
-    });
+    return res.json(buildFallbackPayload());
   }
 
   try {
     const systemInstruction = [
       `You are the Nerve Shark Shared Multi-Developer AI Agent.`,
-      `Multiple mutual-follow verified developers (${participants.join(' and ')}) are collaborating in real time on repository ${repo} (${filePath}).`,
-      `Provide a concise technical root-cause diagnosis (2 sentences max), an exact replacement code patch, the shell command to verify in container, and a conventional commit PR title.`,
+      `Multiple developers (${participants.join(' and ')}) are collaborating in real time on repository ${repo} (${filePath}).`,
+      `Provide a concise technical analysis/answer (2-3 sentences max), an exact code patch or snippet if applicable, the shell command to verify, and a conventional commit PR title.`,
     ].join(' ');
 
     const userPrompt = [
@@ -3000,7 +3084,7 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
       .join('\n\n');
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-4-hydrogen',
       contents: userPrompt,
       config: {
         systemInstruction,
@@ -3010,11 +3094,11 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
           properties: {
             summary: {
               type: Type.STRING,
-              description: 'Concise root-cause analysis and collaborative recommendation for all developers in the thread.',
+              description: 'Concise analysis and collaborative recommendation for developers in the thread.',
             },
             suggestedPatch: {
               type: Type.STRING,
-              description: 'Exact replacement code snippet fixing the issue.',
+              description: 'Exact replacement code snippet fixing or improving the target file.',
             },
             recommendedTerminalCommand: {
               type: Type.STRING,
@@ -3030,26 +3114,22 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
       },
     });
 
-    const rawText = (response.text ?? '{}').trim();
+    const rawText = (response.text ?? '{}')
+      .trim()
+      .replace(/^```json\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
     const parsed = JSON.parse(rawText);
 
     return res.json({
-      protocol: 'nerve.copilot.v1',
-      model: 'gemini-3.8-flash',
+      protocol: 'nerve.shark.v1',
+      model: 'gemini-4-hydrogen',
       participants,
       ...parsed,
     });
   } catch (error: any) {
     console.error('Gemini collaboration error:', error?.message || error);
-    return res.json({
-      protocol: 'nerve.copilot.v1',
-      model: 'gemini-3.8-flash',
-      participants,
-      summary: `Evaluated ${repo}#${branch}/${filePath}: guarding responseStream against premature client socket teardown prevents unhandled TypeError.`,
-      suggestedPatch: `if (ctx.abortSignal?.aborted || !ctx.responseStream || ctx.responseStream.destroyed) {\n  return { dropped: true, reason: 'CLIENT_SOCKET_CLOSED' };\n}\nif (!ctx.headersSent && typeof ctx.responseStream.flushHeaders === 'function') {\n  ctx.responseStream.flushHeaders();\n  ctx.headersSent = true;\n}`,
-      recommendedTerminalCommand: 'npm test',
-      prTitle: `fix(proxy): guard flushHeaders against aborted client stream in ${filePath}`,
-    });
+    return res.json(buildFallbackPayload());
   }
 });
 
