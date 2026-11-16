@@ -2140,6 +2140,184 @@ app.get('/api/v1/github/search', async (req, res) => {
   });
 });
 
+// Resolve GitHub @users connected to a signed-in email address
+app.get('/api/v1/users/by-email', async (req, res) => {
+  const rawEmail = String(req.query.email || '').trim().toLowerCase();
+  const oauthHandle = String(req.query.githubHandle || '')
+    .trim()
+    .replace(/^@/, '');
+
+  if (!rawEmail && !oauthHandle) {
+    return res.json({
+      protocol: 'nerve.users.by_email.v1',
+      email: rawEmail,
+      users: [],
+    });
+  }
+
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'Nerve-Work-Surface',
+  };
+
+  type MatchedHandle = {
+    login: string;
+    name?: string;
+    avatarUrl?: string;
+    bio?: string;
+    organization?: string;
+    publicRepos?: number;
+    source: string;
+  };
+
+  const matchedMap = new Map<string, MatchedHandle>();
+
+  const registerMatch = (entry: MatchedHandle) => {
+    const key = entry.login.trim().toLowerCase();
+    if (!key) return;
+    const existing = matchedMap.get(key);
+    if (!existing) {
+      matchedMap.set(key, { ...entry, login: entry.login.trim() });
+    } else if (!existing.source.includes(entry.source)) {
+      matchedMap.set(key, {
+        ...existing,
+        name: existing.name || entry.name,
+        avatarUrl: existing.avatarUrl || entry.avatarUrl,
+        source: `${existing.source} · ${entry.source}`,
+      });
+    }
+  };
+
+  if (oauthHandle) {
+    registerMatch({
+      login: oauthHandle,
+      source: 'GitHub OAuth Account',
+    });
+  }
+
+  // Check Nerve local USERS_STORE matches by email
+  if (rawEmail) {
+    for (const acct of USERS_STORE.values()) {
+      if (acct.email && acct.email.toLowerCase() === rawEmail && acct.handle) {
+        registerMatch({
+          login: acct.handle,
+          name: acct.displayName,
+          organization: acct.org,
+          source: 'Nerve Account',
+        });
+      }
+    }
+  }
+
+  if (rawEmail) {
+    // 1. GitHub User Search by public email (`<email> in:email`)
+    try {
+      const userSearchRes = await fetch(
+        `https://api.github.com/search/users?q=${encodeURIComponent(`${rawEmail} in:email`)}&per_page=8`,
+        { headers }
+      );
+      if (userSearchRes.ok) {
+        const data = await userSearchRes.json();
+        if (Array.isArray(data.items)) {
+          for (const item of data.items) {
+            if (item?.login) {
+              registerMatch({
+                login: String(item.login),
+                avatarUrl: String(
+                  item.avatar_url || `https://avatars.githubusercontent.com/${item.login}`
+                ),
+                source: 'GitHub Email Profile',
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore network/rate limit error
+    }
+
+    // 2. GitHub Commit Search by author-email (`author-email:<email>`)
+    try {
+      const commitSearchRes = await fetch(
+        `https://api.github.com/search/commits?q=${encodeURIComponent(`author-email:${rawEmail}`)}&per_page=10`,
+        { headers }
+      );
+      if (commitSearchRes.ok) {
+        const data = await commitSearchRes.json();
+        if (Array.isArray(data.items)) {
+          for (const item of data.items) {
+            const authorLogin = item?.author?.login || item?.committer?.login;
+            if (authorLogin) {
+              registerMatch({
+                login: String(authorLogin),
+                name: item?.commit?.author?.name || String(authorLogin),
+                avatarUrl: String(
+                  item?.author?.avatar_url ||
+                    `https://avatars.githubusercontent.com/${authorLogin}`
+                ),
+                source: 'GitHub Commit Author',
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore network/rate limit error
+    }
+  }
+
+  // Enrich top matches with full GitHub profile metadata
+  const enrichedUsers = await Promise.all(
+    Array.from(matchedMap.values())
+      .slice(0, 8)
+      .map(async (m) => {
+        try {
+          const profileRes = await fetch(
+            `https://api.github.com/users/${encodeURIComponent(m.login)}`,
+            { headers }
+          );
+          if (profileRes.ok) {
+            const gh = await profileRes.json();
+            return {
+              login: String(gh.login || m.login),
+              name: String(gh.name || m.name || gh.login || m.login),
+              avatarUrl: String(
+                gh.avatar_url ||
+                  m.avatarUrl ||
+                  `https://avatars.githubusercontent.com/${encodeURIComponent(m.login)}`
+              ),
+              bio: String(gh.bio || m.bio || `GitHub Developer (@${m.login})`),
+              organization: String(gh.company || m.organization || 'GitHub Community').replace(
+                /^@/,
+                ''
+              ),
+              publicRepos: Number(gh.public_repos || 0),
+              source: m.source,
+            };
+          }
+        } catch {
+          // Use base match info
+        }
+        return {
+          login: m.login,
+          name: m.name || m.login,
+          avatarUrl:
+            m.avatarUrl || `https://avatars.githubusercontent.com/${encodeURIComponent(m.login)}`,
+          bio: m.bio || `GitHub Developer (@${m.login})`,
+          organization: m.organization || 'GitHub Community',
+          publicRepos: Number(m.publicRepos || 0),
+          source: m.source,
+        };
+      })
+  );
+
+  res.json({
+    protocol: 'nerve.users.by_email.v1',
+    email: rawEmail,
+    users: enrichedUsers,
+  });
+});
+
 // Track a newly added repository in CI/CD Health Store
 app.post('/api/v1/ci/track-repo', authenticateApiKey, (req, res) => {
   const {

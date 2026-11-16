@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 
 interface IntegrationUnlockOverlayProps {
+  requiresReverification?: boolean;
   isUnlockPromptConfirmed: boolean;
   onStartUnlock: () => void;
   onResetUnlockPrompt: () => void;
@@ -39,6 +40,7 @@ interface IntegrationUnlockOverlayProps {
 }
 
 export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> = ({
+  requiresReverification = true,
   isUnlockPromptConfirmed,
   onStartUnlock,
   onResetUnlockPrompt,
@@ -100,7 +102,7 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
         className="absolute inset-0 z-20 bg-black/65 flex items-center justify-center p-4"
       >
         <div className="w-full max-w-lg rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white shadow-2xl p-5 sm:p-6 space-y-5">
-          {!isUnlockPromptConfirmed ? (
+          {requiresReverification && !isUnlockPromptConfirmed ? (
             <>
               <div className="flex items-start justify-between gap-3 border-b border-neutral-200 dark:border-neutral-800 pb-4">
                 <div className="space-y-1">
@@ -143,22 +145,28 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
             <>
               <div className="flex items-start justify-between gap-3 border-b border-neutral-200 dark:border-neutral-800 pb-4">
                 <div className="space-y-1">
-                  <button
-                    type="button"
-                    onClick={onResetUnlockPrompt}
-                    className="inline-flex items-center gap-1 text-[11px] font-medium text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer mb-1"
-                  >
-                    <ArrowLeft className="w-3 h-3" />
-                    <span>Back</span>
-                  </button>
+                  {requiresReverification && (
+                    <button
+                      type="button"
+                      onClick={onResetUnlockPrompt}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer mb-1"
+                    >
+                      <ArrowLeft className="w-3 h-3" />
+                      <span>Back</span>
+                    </button>
+                  )}
                   <h1
                     id="integration-unlock-title"
                     className="text-base sm:text-lg font-bold text-black dark:text-white text-balance"
                   >
-                    Re-verify Identity to Unlock Integration
+                    {requiresReverification
+                      ? 'Re-verify Identity to Unlock Integration'
+                      : 'Sign in to Integration'}
                   </h1>
                   <p className="text-xs text-neutral-600 dark:text-neutral-400">
-                    Confirm your User Email, Third-Party App Email, or OAuth identity to open the Integration console.
+                    {requiresReverification
+                      ? 'Confirm your User Email, Third-Party App Email, or OAuth identity to unlock the Integration console.'
+                      : 'Sign in with your User Email, Third-Party App Email, or OAuth account to access Integration.'}
                   </p>
                 </div>
                 <Lock className="w-5 h-5 text-amber-500 shrink-0 mt-1" />
@@ -229,7 +237,9 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
 
                   <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
                     <div className="text-[11px] text-center text-neutral-500 dark:text-neutral-400">
-                      Or re-authenticate via OAuth to unlock Integration:
+                      {requiresReverification
+                        ? 'Or re-authenticate via OAuth to unlock Integration:'
+                        : 'Or sign in with OAuth:'}
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button

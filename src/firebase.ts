@@ -553,6 +553,168 @@ export async function deleteGitHubPeerFromFirestore(
   }
 }
 
+export interface ConnectedEmailUser {
+  login: string;
+  name: string;
+  avatarUrl: string;
+  bio: string;
+  organization: string;
+  publicRepos: number;
+  source: string;
+}
+
+/**
+ * Fetches real GitHub @users connected to the currently signed-in email address
+ * (via Nerve backend proxy -> GitHub User Email & Commit Author search, with direct
+ * GitHub API fallback for static deployments + authenticated GitHub OAuth handle).
+ */
+export async function fetchConnectedUsersByEmail(
+  email: string,
+  user?: User | null
+): Promise<ConnectedEmailUser[]> {
+  const cleanEmail = email.trim().toLowerCase();
+  const githubProviderHandle =
+    (user as any)?._tokenResponse?.screenName ||
+    (user as any)?.reloadUserInfo?.screenName ||
+    '';
+
+  const resultMap = new Map<string, ConnectedEmailUser>();
+
+  const addCandidate = (candidate: ConnectedEmailUser) => {
+    const key = candidate.login.trim().toLowerCase();
+    if (!key) return;
+    const existing = resultMap.get(key);
+    if (!existing) {
+      resultMap.set(key, {
+        ...candidate,
+        login: candidate.login.trim(),
+      });
+    } else if (!existing.source.includes(candidate.source)) {
+      resultMap.set(key, {
+        ...existing,
+        name: existing.name || candidate.name,
+        avatarUrl: existing.avatarUrl || candidate.avatarUrl,
+        bio: existing.bio || candidate.bio,
+        organization: existing.organization || candidate.organization,
+        publicRepos: Math.max(existing.publicRepos, candidate.publicRepos),
+        source: `${existing.source} · ${candidate.source}`,
+      });
+    }
+  };
+
+  if (githubProviderHandle) {
+    addCandidate({
+      login: String(githubProviderHandle),
+      name: user?.displayName || String(githubProviderHandle),
+      avatarUrl:
+        user?.photoURL ||
+        `https://avatars.githubusercontent.com/${encodeURIComponent(String(githubProviderHandle))}`,
+      bio: 'Authenticated GitHub OAuth account',
+      organization: 'GitHub',
+      publicRepos: 0,
+      source: 'GitHub OAuth Account',
+    });
+  }
+
+  if (cleanEmail || githubProviderHandle) {
+    let usedBackend = false;
+    try {
+      const params = new URLSearchParams();
+      if (cleanEmail) params.set('email', cleanEmail);
+      if (githubProviderHandle) params.set('githubHandle', String(githubProviderHandle));
+      const res = await fetch(`/api/v1/users/by-email?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.users)) {
+          usedBackend = true;
+          for (const u of data.users) {
+            if (u?.login) {
+              addCandidate({
+                login: String(u.login),
+                name: String(u.name || u.login),
+                avatarUrl: String(
+                  u.avatarUrl || `https://avatars.githubusercontent.com/${encodeURIComponent(u.login)}`
+                ),
+                bio: String(u.bio || `GitHub Developer (@${u.login})`),
+                organization: String(u.organization || 'GitHub Community'),
+                publicRepos: Number(u.publicRepos || 0),
+                source: String(u.source || 'GitHub Email Match'),
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // Fallback to direct public GitHub API below
+    }
+
+    // Direct GitHub API fallback when running on static hosting without Express backend
+    if (!usedBackend && cleanEmail) {
+      try {
+        const userRes = await fetch(
+          `https://api.github.com/search/users?q=${encodeURIComponent(`${cleanEmail} in:email`)}&per_page=8`,
+          { headers: { Accept: 'application/vnd.github+json' } }
+        );
+        if (userRes.ok) {
+          const data = await userRes.json();
+          if (Array.isArray(data.items)) {
+            for (const item of data.items) {
+              if (item?.login) {
+                addCandidate({
+                  login: String(item.login),
+                  name: String(item.login),
+                  avatarUrl: String(
+                    item.avatar_url || `https://avatars.githubusercontent.com/${item.login}`
+                  ),
+                  bio: `GitHub Developer (@${item.login})`,
+                  organization: 'GitHub Community',
+                  publicRepos: 0,
+                  source: 'GitHub Email Profile',
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore direct search fallback error
+      }
+
+      try {
+        const commitRes = await fetch(
+          `https://api.github.com/search/commits?q=${encodeURIComponent(`author-email:${cleanEmail}`)}&per_page=10`,
+          { headers: { Accept: 'application/vnd.github+json' } }
+        );
+        if (commitRes.ok) {
+          const data = await commitRes.json();
+          if (Array.isArray(data.items)) {
+            for (const item of data.items) {
+              const authorLogin = item?.author?.login || item?.committer?.login;
+              if (authorLogin) {
+                addCandidate({
+                  login: String(authorLogin),
+                  name: String(item?.commit?.author?.name || authorLogin),
+                  avatarUrl: String(
+                    item?.author?.avatar_url ||
+                      `https://avatars.githubusercontent.com/${authorLogin}`
+                  ),
+                  bio: `GitHub Developer (@${authorLogin})`,
+                  organization: 'GitHub Community',
+                  publicRepos: 0,
+                  source: 'GitHub Commit Author',
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore direct commit search fallback error
+      }
+    }
+  }
+
+  return Array.from(resultMap.values());
+}
+
 export {
   signInWithPopup,
   createUserWithEmailAndPassword,

@@ -49,6 +49,7 @@ import {
   Globe,
   Shield,
   FileText,
+  Users,
 } from 'lucide-react';
 import {
   DeveloperPeer,
@@ -63,6 +64,7 @@ import {
 import { IncidentWorkflowView } from './components/IncidentWorkflowView';
 import { Integration } from './components/Integration';
 import { LegalDocumentView } from './components/LegalDocumentView';
+import { ConnectedEmailUsersModal } from './components/ConnectedEmailUsersModal';
 import { useP2PEngine, SignalingTransportMode } from './hooks/useP2PEngine';
 import {
   getOfflineQueue,
@@ -353,15 +355,39 @@ interface VerifiedEmailSession {
 
 const LOCAL_AUTH_SESSION_KEY = 'nerve_verified_email_session_v1';
 const LOCAL_INTEGRATION_SESSION_KEY = 'nerve_integration_verified_email_v1';
+const SESSION_INTEGRATION_REAUTH_KEY = 'nerve_integration_requires_reauth_v1';
 
 export default function App() {
   const [activeTab, setActiveTabState] = useState<ActiveTab>(() => resolveTabFromLocation());
   const [isDark, setIsDark] = useState<boolean>(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const [showConnectedUsersModal, setShowConnectedUsersModal] = useState<boolean>(false);
+  const [connectedUsersLookupEmail, setConnectedUsersLookupEmail] = useState<string>('');
 
   const [integrationVerifiedEmail, setIntegrationVerifiedEmail] = useState<string>('');
+  const [requiresIntegrationReauth, setRequiresIntegrationReauth] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(SESSION_INTEGRATION_REAUTH_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const wasOnIntegrationRef = useRef<boolean>(false);
   const integrationUnlockedSessionRef = useRef<boolean>(false);
+  const integrationVerifiedEmailRef = useRef<string>('');
+
+  const updateRequiresIntegrationReauth = (next: boolean) => {
+    setRequiresIntegrationReauth(next);
+    try {
+      if (next) {
+        sessionStorage.setItem(SESSION_INTEGRATION_REAUTH_KEY, '1');
+      } else {
+        sessionStorage.removeItem(SESSION_INTEGRATION_REAUTH_KEY);
+      }
+    } catch {
+      // Ignore storage error
+    }
+  };
 
   // Clear any legacy persisted Integration unlock key on mount so reloads always require Unlock Session
   useEffect(() => {
@@ -373,9 +399,11 @@ export default function App() {
   }, []);
 
   const saveIntegrationVerifiedEmail = (email: string) => {
+    integrationVerifiedEmailRef.current = email;
     setIntegrationVerifiedEmail(email);
     if (email) {
       integrationUnlockedSessionRef.current = true;
+      updateRequiresIntegrationReauth(true);
     }
     try {
       localStorage.removeItem(LOCAL_INTEGRATION_SESSION_KEY);
@@ -1360,39 +1388,7 @@ export default function App() {
     }
   }, [activeRepoKey, activeFilePath, highlightedLine]);
 
-  // Listen to Firebase Auth state and load user's saved GitHub peers
-  const ensureSelfPeerInRoster = (
-    handle: string,
-    displayName?: string | null,
-    photoURL?: string | null
-  ) => {
-    const clean = handle.toLowerCase().replace(/[^a-z0-9-]/g, '-') || 'developer';
-    const initials = clean.slice(0, 2).toUpperCase() || 'GH';
-    const selfPeer: DeveloperPeer = {
-      id: `dev-${clean}`,
-      handle: clean,
-      name: displayName || clean,
-      role: 'Workspace Lead Developer',
-      organization: 'GitHub Community',
-      avatarUrl:
-        photoURL || `https://avatars.githubusercontent.com/${encodeURIComponent(clean)}`,
-      youFollowThem: true,
-      theyFollowYou: true,
-      proofOfWorkCommits: 48,
-      mergedPrs: 12,
-      maintainedRepos: [activeRepoKey || 'owner/repository'],
-      focusModeOptOut: false,
-      statusText: 'Connected in Workspace',
-      activeBranch: 'main',
-      avatarInitials: initials,
-    };
-    setPeers((prev) => {
-      const exists = prev.some((p) => p.handle.toLowerCase() === clean);
-      return exists ? prev : [selfPeer, ...prev];
-    });
-    setSelectedPeerHandle((prev) => prev || clean);
-  };
-
+  // Listen to Firebase Auth state and sync user's saved GitHub peers without auto-selecting a contributor
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
@@ -1400,20 +1396,23 @@ export default function App() {
         const ghScreenName =
           (user as any)?._tokenResponse?.screenName ||
           (user as any)?.reloadUserInfo?.screenName ||
-          user.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
-          user.email?.split('@')[0] ||
-          'developer';
+          undefined;
         try {
           const syncedPeers = await syncAuthenticatedUserAndPeers(user, ghScreenName);
           if (syncedPeers.length > 0) {
-            setPeers(syncedPeers);
-            setSelectedPeerHandle((prev) => prev || syncedPeers[0].handle);
-          } else {
-            ensureSelfPeerInRoster(ghScreenName, user.displayName, user.photoURL);
+            setPeers((prev) => {
+              const existingHandles = new Set(prev.map((p) => p.handle.toLowerCase()));
+              const merged = [...prev];
+              for (const sp of syncedPeers) {
+                if (!existingHandles.has(sp.handle.toLowerCase())) {
+                  merged.push(sp);
+                }
+              }
+              return merged;
+            });
           }
         } catch (err) {
           console.error('Error syncing Firestore GitHub peers:', err);
-          ensureSelfPeerInRoster(ghScreenName, user.displayName, user.photoURL);
           const errorMsg = formatAuthErrorMessage(err, 'GitHub');
           setAuthError(errorMsg);
         }
@@ -1421,17 +1420,6 @@ export default function App() {
     });
     return () => unsub();
   }, [activeRepoKey]);
-
-  // Sync emailSession to peers if currentUser is not active
-  useEffect(() => {
-    if (emailSession && !currentUser && peers.length === 0) {
-      const cleanHandle =
-        emailSession.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
-        emailSession.email.split('@')[0] ||
-        'developer';
-      ensureSelfPeerInRoster(cleanHandle, emailSession.displayName, undefined);
-    }
-  }, [emailSession, currentUser, peers.length]);
 
   // =========================================================================
   // AUTHENTICATION HANDLERS:
@@ -1461,9 +1449,7 @@ export default function App() {
       const ghScreenName =
         (user as any)?._tokenResponse?.screenName ||
         (user as any)?.reloadUserInfo?.screenName ||
-        user.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
-        user.email?.split('@')[0] ||
-        'developer';
+        undefined;
       try {
         const syncedPeers = await syncAuthenticatedUserAndPeers(user, ghScreenName);
         if (syncedPeers.length > 0) {
@@ -1477,20 +1463,12 @@ export default function App() {
             }
             return merged;
           });
-          setSelectedPeerHandle((prev) => prev || syncedPeers[0].handle);
-        } else {
-          ensureSelfPeerInRoster(ghScreenName, user.displayName, user.photoURL);
         }
       } catch {
-        ensureSelfPeerInRoster(ghScreenName, user.displayName, user.photoURL);
+        // Signing in does not auto-create or auto-select a contributor
       }
     } else if (session) {
       saveVerifiedEmailSession(session);
-      const cleanHandle =
-        session.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
-        session.email.split('@')[0] ||
-        'developer';
-      ensureSelfPeerInRoster(cleanHandle, session.displayName, undefined);
     }
   };
 
@@ -1724,10 +1702,30 @@ export default function App() {
     }
   };
 
+  // Explicit user Sign Out -> clears auth and returns Integration to normal Sign-In (not reverification)
   const handleSignOutAll = async () => {
     integrationUnlockedSessionRef.current = false;
+    updateRequiresIntegrationReauth(false);
     saveVerifiedEmailSession(null);
     saveIntegrationVerifiedEmail('');
+    setCachedGmailAccessToken(null);
+    setCurrentUser(null);
+    if (auth.currentUser || currentUser) {
+      try {
+        await signOut(auth);
+      } catch {
+        // Ignore signOut errors if session was already invalidated
+      }
+    }
+  };
+
+  // Auto-lock & auto-sign out on leaving Integration or hiding browser tab -> requires reverification on return
+  const handleAutoSignOutFromIntegration = async () => {
+    integrationUnlockedSessionRef.current = false;
+    integrationVerifiedEmailRef.current = '';
+    updateRequiresIntegrationReauth(true);
+    saveVerifiedEmailSession(null);
+    setIntegrationVerifiedEmail('');
     setCachedGmailAccessToken(null);
     setCurrentUser(null);
     if (auth.currentUser || currentUser) {
@@ -1749,11 +1747,12 @@ export default function App() {
     if (wasOnIntegrationRef.current) {
       wasOnIntegrationRef.current = false;
       const hadUnlockedOrSignedIn =
-        integrationUnlockedSessionRef.current || Boolean(integrationVerifiedEmail);
+        integrationUnlockedSessionRef.current || Boolean(integrationVerifiedEmailRef.current);
+      integrationVerifiedEmailRef.current = '';
       setIntegrationVerifiedEmail('');
       setCachedGmailAccessToken(null);
       if (hadUnlockedOrSignedIn) {
-        void handleSignOutAll();
+        void handleAutoSignOutFromIntegration();
       }
     }
   }, [activeTab]);
@@ -2164,7 +2163,7 @@ export default function App() {
     setPeers((prev) => {
       const remaining = prev.filter((p) => p.handle.toLowerCase() !== cleanHandle);
       if (selectedPeerHandle.toLowerCase() === cleanHandle) {
-        setSelectedPeerHandle(remaining[0]?.handle || '');
+        setSelectedPeerHandle('');
       }
       return remaining;
     });
@@ -2394,8 +2393,9 @@ export default function App() {
     }
   };
 
-  const activePeer: DeveloperPeer | undefined =
-    peers.find((p) => p.handle === selectedPeerHandle) || peers[0];
+  const activePeer: DeveloperPeer | undefined = selectedPeerHandle
+    ? peers.find((p) => p.handle === selectedPeerHandle)
+    : undefined;
   const isMutualFollow = activePeer ? activePeer.youFollowThem && activePeer.theyFollowYou : false;
   const hasProofOfWork = activePeer ? activePeer.proofOfWorkCommits >= 15 : true;
   const canOpenP2PChannel = Boolean(
@@ -2422,8 +2422,40 @@ export default function App() {
 
   const authenticatedDisplayName =
     currentUser?.displayName || emailSession?.displayName || currentUser?.email || emailSession?.email || '';
+  const activeSignedInEmail =
+    currentUser?.email ||
+    emailSession?.email ||
+    integrationVerifiedEmail ||
+    currentUser?.providerData?.find((p) => p?.email)?.email ||
+    '';
   const currentSenderHandle =
     authenticatedDisplayName.toLowerCase().replace(/[^a-z0-9-]/g, '-') || 'developer';
+
+  const handleOpenConnectedUsersModal = (emailOverride?: string) => {
+    const resolvedEmail = (emailOverride || activeSignedInEmail || '').trim();
+    setConnectedUsersLookupEmail(resolvedEmail);
+    setShowConnectedUsersModal(true);
+  };
+
+  const handleSelectConnectedUser = async (login: string) => {
+    const clean = login.trim().replace(/^@/, '');
+    if (!clean) return;
+    const existing = peers.find((p) => p.handle.toLowerCase() === clean.toLowerCase());
+    if (existing) {
+      setSelectedPeerHandle(existing.handle);
+      return;
+    }
+    try {
+      const addedPeer = await addRealGitHubPeerToFirestore(currentUser, clean);
+      setPeers((prev) => {
+        const dup = prev.some((p) => p.handle.toLowerCase() === addedPeer.handle.toLowerCase());
+        return dup ? prev : [addedPeer, ...prev];
+      });
+      setSelectedPeerHandle(addedPeer.handle);
+    } catch (err) {
+      console.error('Failed to select connected user:', err);
+    }
+  };
 
   const applyReactionToMessageInState = (
     targetPeerHandle: string,
@@ -3757,6 +3789,7 @@ export default function App() {
             setIsMobileMenuOpen(false);
             setShowBugModal(false);
             setShowAuthModal(false);
+            setShowConnectedUsersModal(false);
             setShowSearchDropdown(false);
             setGithubSearchQuery('');
             setGithubSearchType('all');
@@ -3817,6 +3850,16 @@ export default function App() {
               <span className="font-medium text-black dark:text-white max-w-[110px] truncate">
                 {authenticatedDisplayName}
               </span>
+              {activeSignedInEmail && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
+                  title={`View @users connected to ${activeSignedInEmail}`}
+                  className="text-[11px] font-mono text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer ml-0.5"
+                >
+                  @users
+                </button>
+              )}
               <button
                 onClick={handleSignOutAll}
                 title="Sign Out"
@@ -4256,9 +4299,12 @@ export default function App() {
           currentUser={currentUser}
           emailSession={emailSession}
           verifiedEmail={integrationVerifiedEmail}
+          requiresReverification={requiresIntegrationReauth || Boolean(currentUser || emailSession)}
           onChangeVerifiedEmail={saveIntegrationVerifiedEmail}
           onSignOut={handleSignOutAll}
+          onAutoLockSignOut={handleAutoSignOutFromIntegration}
           onBackToWorkspace={() => setActiveTab('workspace')}
+          onOpenConnectedUsers={(email) => handleOpenConnectedUsersModal(email)}
           onUserAuthenticated={handleUserAuthenticatedFromIntegration}
           onUpdateRepoCiStatus={(repo, status) => {
             setRepositories((prev) =>
@@ -4562,6 +4608,18 @@ export default function App() {
                       </button>
                     )}
                   </form>
+
+                  {activeSignedInEmail && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
+                      className="px-2 py-1 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1"
+                      title={`View @users connected to ${activeSignedInEmail}`}
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                      <span>@users</span>
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-1.5">
@@ -4790,11 +4848,27 @@ export default function App() {
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
                 <div className="max-w-sm space-y-2">
                   <h3 className="text-sm font-bold text-black dark:text-white">
-                    Add a Peer or Repository Channel
+                    {peers.length > 0
+                      ? 'Select a Contributor'
+                      : 'Add a Peer or Repository Channel'}
                   </h3>
                   <p className="text-xs text-black/70 dark:text-white/70">
-                    Search any repository channel (GitHub, GitLab, Bitbucket, or custom Git remote) above or enter `+ @peer-handle` to open an E2EE P2P channel.
+                    {peers.length > 0
+                      ? 'Signing in does not automatically select a contributor. Pick a contributor above or enter `+ @peer-handle` to open an E2EE P2P channel.'
+                      : 'Search any repository channel (GitHub, GitLab, Bitbucket, or custom Git remote) above or enter `+ @peer-handle` to open an E2EE P2P channel.'}
                   </p>
+                  {activeSignedInEmail && (
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
+                        className="inline-flex items-center gap-1.5 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      >
+                        <Users className="w-3.5 h-3.5" />
+                        <span>View @users connected to {activeSignedInEmail}</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : !hasProofOfWork ? (
@@ -7775,6 +7849,17 @@ export default function App() {
           ))}
         </div>
       )}
+
+      {/* Modal: @users connected to signed-in email */}
+      <ConnectedEmailUsersModal
+        isOpen={showConnectedUsersModal}
+        email={connectedUsersLookupEmail || activeSignedInEmail}
+        currentUser={currentUser}
+        selectedPeerHandle={selectedPeerHandle}
+        onClose={() => setShowConnectedUsersModal(false)}
+        onSelectUser={handleSelectConnectedUser}
+        onConnectGitHub={handleGitHubOAuthSignIn}
+      />
 
       {/* Quiet Legal Site Footer */}
       <footer className="border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black px-4 sm:px-6 py-3 text-xs text-neutral-500 dark:text-neutral-400 flex flex-wrap items-center justify-between gap-3">

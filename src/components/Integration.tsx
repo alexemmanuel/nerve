@@ -106,9 +106,12 @@ interface IntegrationProps {
   currentUser?: User | null;
   emailSession?: { uid: string; email: string; displayName: string } | null;
   verifiedEmail?: string;
+  requiresReverification?: boolean;
   onChangeVerifiedEmail?: (email: string) => void;
   onSignOut?: () => Promise<void> | void;
+  onAutoLockSignOut?: () => Promise<void> | void;
   onBackToWorkspace?: () => void;
+  onOpenConnectedUsers?: (email: string) => void;
   onUserAuthenticated?: (
     user: User | null,
     emailSession?: { uid: string; email: string; displayName: string } | null
@@ -418,9 +421,12 @@ export const Integration: React.FC<IntegrationProps> = ({
   currentUser = null,
   emailSession: _emailSession = null,
   verifiedEmail,
+  requiresReverification,
   onChangeVerifiedEmail,
   onSignOut,
+  onAutoLockSignOut,
   onBackToWorkspace,
+  onOpenConnectedUsers,
   onUserAuthenticated,
   onUpdateRepoCiStatus,
   isDark,
@@ -436,17 +442,26 @@ export const Integration: React.FC<IntegrationProps> = ({
   const [showActiveKey, setShowActiveKey] = useState<boolean>(false);
   const [activeKeySealed, setActiveKeySealed] = useState<boolean>(() => isKeySealed(activeKey));
 
-  // Ephemeral Unlock State: always starts locked after page load, section switch, or browser tab switch
+  const needsReverificationGate = Boolean(
+    requiresReverification ?? (currentUser || _emailSession)
+  );
+
+  // Ephemeral Unlock State: shows reverification overlay when returning/reloading, or normal sign-in after explicit Sign Out
   const [localVerifiedEmail, setLocalVerifiedEmail] = useState<string>('');
-  const [isUnlockPromptConfirmed, setIsUnlockPromptConfirmed] = useState<boolean>(false);
+  const [isUnlockPromptConfirmed, setIsUnlockPromptConfirmed] = useState<boolean>(
+    () => !needsReverificationGate
+  );
   const integrationVerifiedEmail =
     verifiedEmail !== undefined ? verifiedEmail : localVerifiedEmail;
 
+  useEffect(() => {
+    if (!integrationVerifiedEmail && !needsReverificationGate) {
+      setIsUnlockPromptConfirmed(true);
+    }
+  }, [integrationVerifiedEmail, needsReverificationGate]);
+
   const setAndPersistVerifiedEmail = (email: string) => {
     setLocalVerifiedEmail(email);
-    if (!email) {
-      setIsUnlockPromptConfirmed(false);
-    }
     if (onChangeVerifiedEmail) {
       onChangeVerifiedEmail(email);
     }
@@ -461,7 +476,7 @@ export const Integration: React.FC<IntegrationProps> = ({
   const [isVerifyingGate, setIsVerifyingGate] = useState<boolean>(false);
   const [showGmailSendConfirmModal, setShowGmailSendConfirmModal] = useState<boolean>(false);
 
-  // Auto-lock and sign out when user switches browser tabs/windows while unlocked
+  // Auto-lock and auto-sign out when user switches browser tabs/windows while unlocked
   useEffect(() => {
     if (!integrationVerifiedEmail) return;
 
@@ -473,7 +488,11 @@ export const Integration: React.FC<IntegrationProps> = ({
         setGateCodeInput('');
         setGateError('');
         setGateDispatchMessage('');
-        void onSignOut?.();
+        if (onAutoLockSignOut) {
+          void onAutoLockSignOut();
+        } else {
+          void onSignOut?.();
+        }
       }
     };
 
@@ -725,8 +744,10 @@ export const Integration: React.FC<IntegrationProps> = ({
 
   const handleExplicitSignOut = async () => {
     setAndPersistVerifiedEmail('');
+    setIsUnlockPromptConfirmed(true);
     setGateStep('email');
     setGateCodeInput('');
+    setGateError('');
     setGateDispatchMessage('');
     if (onSignOut) {
       await onSignOut();
@@ -1622,6 +1643,7 @@ const data = await response.json();`;
   if (!integrationVerifiedEmail) {
     return (
       <IntegrationUnlockOverlay
+        requiresReverification={needsReverificationGate}
         isUnlockPromptConfirmed={isUnlockPromptConfirmed}
         onStartUnlock={() => {
           setGateError('');
@@ -1671,6 +1693,16 @@ const data = await response.json();`;
             <ShieldCheck className="w-3.5 h-3.5" />
             <span>Confirmed: {integrationVerifiedEmail}</span>
           </span>
+          {onOpenConnectedUsers && (
+            <button
+              type="button"
+              onClick={() => onOpenConnectedUsers(integrationVerifiedEmail)}
+              className="px-2 py-0.5 text-[11px] font-mono text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+              title={`View @users connected to ${integrationVerifiedEmail}`}
+            >
+              @users
+            </button>
+          )}
           <button
             type="button"
             onClick={handleExplicitSignOut}
