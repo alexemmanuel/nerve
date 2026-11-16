@@ -359,22 +359,26 @@ export default function App() {
   const [isDark, setIsDark] = useState<boolean>(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
 
-  const [integrationVerifiedEmail, setIntegrationVerifiedEmail] = useState<string>(() => {
+  const [integrationVerifiedEmail, setIntegrationVerifiedEmail] = useState<string>('');
+  const wasOnIntegrationRef = useRef<boolean>(false);
+  const integrationUnlockedSessionRef = useRef<boolean>(false);
+
+  // Clear any legacy persisted Integration unlock key on mount so reloads always require Unlock Session
+  useEffect(() => {
     try {
-      return localStorage.getItem(LOCAL_INTEGRATION_SESSION_KEY) || '';
+      localStorage.removeItem(LOCAL_INTEGRATION_SESSION_KEY);
     } catch {
-      return '';
+      // Ignore storage error
     }
-  });
+  }, []);
 
   const saveIntegrationVerifiedEmail = (email: string) => {
     setIntegrationVerifiedEmail(email);
+    if (email) {
+      integrationUnlockedSessionRef.current = true;
+    }
     try {
-      if (email) {
-        localStorage.setItem(LOCAL_INTEGRATION_SESSION_KEY, email);
-      } else {
-        localStorage.removeItem(LOCAL_INTEGRATION_SESSION_KEY);
-      }
+      localStorage.removeItem(LOCAL_INTEGRATION_SESSION_KEY);
     } catch {
       // Ignore storage error
     }
@@ -1721,6 +1725,7 @@ export default function App() {
   };
 
   const handleSignOutAll = async () => {
+    integrationUnlockedSessionRef.current = false;
     saveVerifiedEmailSession(null);
     saveIntegrationVerifiedEmail('');
     setCachedGmailAccessToken(null);
@@ -1733,6 +1738,25 @@ export default function App() {
       }
     }
   };
+
+  // Auto-lock Integration and auto-sign out Integration session whenever leaving the Integration page
+  useEffect(() => {
+    if (activeTab === 'integration') {
+      wasOnIntegrationRef.current = true;
+      return;
+    }
+
+    if (wasOnIntegrationRef.current) {
+      wasOnIntegrationRef.current = false;
+      const hadUnlockedOrSignedIn =
+        integrationUnlockedSessionRef.current || Boolean(integrationVerifiedEmail);
+      setIntegrationVerifiedEmail('');
+      setCachedGmailAccessToken(null);
+      if (hadUnlockedOrSignedIn) {
+        void handleSignOutAll();
+      }
+    }
+  }, [activeTab]);
 
   const handleAddRealGitHubPeer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3729,21 +3753,28 @@ export default function App() {
       <header className="flex items-center justify-between gap-2 px-3 sm:px-6 h-13 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black sticky top-0 z-30">
         <button
           type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            if (window.innerWidth < 768) {
-              setIsMobileMenuOpen((prev) => !prev);
-            } else {
-              setActiveTab('workspace');
-            }
+          onClick={() => {
+            setIsMobileMenuOpen(false);
+            setShowBugModal(false);
+            setShowAuthModal(false);
+            setShowSearchDropdown(false);
+            setGithubSearchQuery('');
+            setGithubSearchType('all');
+            setShowWorkspaceDashboard(true);
+            setWorkspaceDashboardTab('contributors');
+            setIsCodeDrawerOpen(true);
+            setShowTerminal(true);
+            setShowFileExplorer(true);
+            setActiveReactionPickerMessageId(null);
+            setActiveTab('workspace');
+            window.scrollTo({ top: 0, behavior: 'auto' });
           }}
-          aria-label="Nerve Work Surface navigation menu"
-          title="Nerve Navigation"
-          className="text-base font-bold tracking-tight text-black dark:text-white whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer group"
+          aria-label="Reset to Nerve Workspace"
+          title="Reset to Workspace"
+          className="text-base font-bold tracking-tight text-black dark:text-white whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity"
         >
           <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></span>
           <span>Nerve</span>
-          <ChevronDown className="w-3.5 h-3.5 text-neutral-400 group-hover:text-black dark:group-hover:text-white md:hidden transition-transform" />
         </button>
 
         {/* Desktop Center Navigation */}
@@ -4227,6 +4258,7 @@ export default function App() {
           verifiedEmail={integrationVerifiedEmail}
           onChangeVerifiedEmail={saveIntegrationVerifiedEmail}
           onSignOut={handleSignOutAll}
+          onBackToWorkspace={() => setActiveTab('workspace')}
           onUserAuthenticated={handleUserAuthenticatedFromIntegration}
           onUpdateRepoCiStatus={(repo, status) => {
             setRepositories((prev) =>
