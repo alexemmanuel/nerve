@@ -99,7 +99,7 @@ npm install
 Create a `.env` file based on `.env.example` and configure optional server variables as needed:
 
 ```env
-APP_URL="http://localhost:3000"
+
 GEMINI_API_KEY=""              # Optional: enables live Gemini responses in Nerve Shark
 NERVE_LIVE_API_KEY=""          # Optional: override default live key
 NERVE_TEST_API_KEY=""          # Optional: override default test key
