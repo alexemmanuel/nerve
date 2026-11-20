@@ -192,7 +192,11 @@ const ALL_NERVE_ECOSYSTEM_SCOPES: string[] = [
   'auth.google_provider_oauth',
   'auth.google_oauth',
   'github.ssh_keys_manage',
+  'health.gemini_probe',
+  'runtime.vercel_serverless',
 ];
+
+const NERVE_CONTACT_EMAIL = 'nervep2p@gmail.com';
 
 // Security & Cryptographic Salts configured from environment variables (Server-side only)
 const API_KEY_SECRET_SALT = process.env.API_KEY_SECRET_SALT || process.env.AUTH_SECRET_SALT || 'nerve-salt';
@@ -353,8 +357,10 @@ app.get('/api/v1/health', async (req, res) => {
   res.json({
     ok: true,
     protocol: 'nerve.health.v1',
-    engineVersion: '1.6.2',
+    engineVersion: '1.6.3',
+    contactEmail: NERVE_CONTACT_EMAIL,
     runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
+    geminiModel: 'gemini-4-hydrogen',
     geminiKeyConfigured,
     geminiKeyPrefix,
     ...(geminiLiveProbe ? { geminiLiveProbe } : {}),
@@ -556,7 +562,7 @@ async function dispatchVerificationEmail(
     const transporter = await getMailTransporter();
     if (transporter) {
       await transporter.sendMail({
-        from: process.env.SMTP_FROM || '"Nerve Security Protocol" <no-reply@nerve.dev>',
+        from: process.env.SMTP_FROM || `"Nerve Security Protocol" <${NERVE_CONTACT_EMAIL}>`,
         to: toEmail,
         subject: asciiSubject,
         text: `${contextLabel}\n\nYour 6-digit verification code is: ${code}\n\nEnter this code in the Nerve console to complete verification.`,
@@ -696,7 +702,13 @@ app.post('/api/v1/integration/verify-access', (req, res) => {
 app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
   res.json({
     protocol: 'nerve.engine.gateway.v1',
-    engineVersion: '1.6.2',
+    engineVersion: '1.6.3',
+    contactEmail: NERVE_CONTACT_EMAIL,
+    runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
+    geminiModel: 'gemini-4-hydrogen',
+    supportedGeminiKeyPrefixes: ['AQ.', 'AIza'],
+    healthEndpoint: '/api/v1/health',
+    geminiProbeEndpoint: '/api/v1/health?probe=gemini',
     corsEnabled: true,
     universalRepoChannels: ['github', 'gitlab', 'bitbucket', 'gitea', 'custom-git'],
     availableEngines: [
@@ -819,6 +831,11 @@ app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
         engine: 'users_by_email',
         endpoint: '/api/v1/users/by-email',
         description: 'Resolve @users and GitHub handles connected to an authenticated or third-party email',
+      },
+      {
+        engine: 'health_probe',
+        endpoint: '/api/v1/health?probe=gemini',
+        description: 'Verify Vercel serverless runtime, contact profile (nervep2p@gmail.com), and live Gemini API (AQ. / AIza) connectivity',
       },
     ],
     unifiedCalloutEndpoint: '/api/v1/engine/call',
@@ -1319,7 +1336,7 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
   const {
     engine = 'syntax',
     action = 'execute',
-    callerEmail = req.headers['x-integrator-email'] || 'thirdparty@external-app.io',
+    callerEmail = req.headers['x-integrator-email'] || NERVE_CONTACT_EMAIL,
     payload = {},
   } = req.body || {};
 
@@ -1546,11 +1563,32 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
     case 'users_by_email':
       result = {
         protocol: 'nerve.users.by_email.v1',
-        email: payload.email || callerEmail,
+        email: payload.email || callerEmail || NERVE_CONTACT_EMAIL,
         lookupSources: ['GitHub Email Profile', 'GitHub Commit Author', 'Nerve Account'],
         endpoint: '/api/v1/users/by-email',
       };
       break;
+    case 'health_probe': {
+      const rawGeminiKey = (process.env.GEMINI_API_KEY || '').trim();
+      const geminiConfigured = Boolean(rawGeminiKey && rawGeminiKey !== 'MY_GEMINI_API_KEY');
+      result = {
+        protocol: 'nerve.health.v1',
+        engineVersion: '1.6.3',
+        contactEmail: NERVE_CONTACT_EMAIL,
+        runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
+        geminiModel: 'gemini-4-hydrogen',
+        geminiKeyConfigured: geminiConfigured,
+        geminiKeyPrefix: geminiConfigured
+          ? rawGeminiKey.startsWith('AQ.')
+            ? 'AQ.'
+            : rawGeminiKey.startsWith('AIza')
+            ? 'AIza'
+            : 'configured'
+          : 'missing',
+        probeEndpoint: '/api/v1/health?probe=gemini',
+      };
+      break;
+    }
     case 'incidents':
       result = {
         ticketId: `INC-${Math.floor(700 + Math.random() * 290)}`,
@@ -1890,7 +1928,7 @@ function seedGitHubSshKeysStore() {
     {
       id: 9812401,
       title: 'Personal MacBook Pro (ed25519)',
-      key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8qB24rXlZ9pQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b developer@macbook-pro',
+      key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8qB24rXlZ9pQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b nervep2p@gmail.com',
       fingerprint: 'SHA256:d8Q+03h7ZpQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b4a',
       verified: true,
       read_only: false,

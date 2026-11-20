@@ -90,7 +90,7 @@ export const DEFAULT_THIRD_PARTY_KEYS: ThirdPartySshKey[] = [
     host: 'gitlab.com',
     keyType: 'ed25519',
     publicKey:
-      'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq7pB3jK0wL8mN2oP4rS6tU8vW0xY2zA4bC6dE8fG0h ci-runner@gitlab.com',
+      'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq7pB3jK0wL8mN2oP4rS6tU8vW0xY2zA4bC6dE8fG0h nervep2p@gmail.com',
     fingerprintSha256: 'SHA256:x9K4rV1qM8lW7zT2yB5aC0dE3fG6hI9jK2lM5nO8pQs',
     fingerprintMd5: '3b:5a:9f:12:8c:4e:71:0d:fe:aa:99:43:21:55:0b:9a',
     purpose: 'auth',
@@ -106,7 +106,7 @@ export const DEFAULT_THIRD_PARTY_KEYS: ThirdPartySshKey[] = [
     host: 'bitbucket.org',
     keyType: 'rsa',
     publicKey:
-      'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDc9x7vK1wL8mN2oP4rS6tU8vW0xY2zA4bC6dE8fG0hI2jK4lM6nO8pQ1rS3tU5vW7xY9zA1bC3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7bC9dE1fG3hI5jK7lM9nO1pQ3rS5tU7vW9xY1zA3bC5dE7fG9hI1jK3lM5nO7pQ9rS1tU3vW5xY7zA9bC1dE3fG5hI7jK9lM1nO3pQ5rS7tU9vW1xY3zA5bC7dE9fG1hI3jK5lM7nO9pQ1rS3tU5 pipelines@bitbucket.org',
+      'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDc9x7vK1wL8mN2oP4rS6tU8vW0xY2zA4bC6dE8fG0hI2jK4lM6nO8pQ1rS3tU5vW7xY9zA1bC3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7bC9dE1fG3hI5jK7lM9nO1pQ3rS5tU7vW9xY1zA3bC5dE7fG9hI1jK3lM5nO7pQ9rS1tU3vW5xY7zA9bC1dE3fG5hI7jK9lM1nO3pQ5rS7tU9vW1xY3zA5bC7dE9fG1hI3jK5lM7nO9pQ1rS3tU5 nervep2p@gmail.com',
     fingerprintSha256: 'SHA256:m2P8rT5wY1aD4gG7jJ0mM3pP6sS9vV2yY5bE8hK1nQq',
     fingerprintMd5: '7d:14:bb:49:03:ca:82:19:9e:31:72:f4:60:88:cc:11',
     purpose: 'both',
@@ -221,7 +221,7 @@ export interface GenerateKeyOptions {
 export function generateThirdPartySshKeyPair(options: GenerateKeyOptions): ThirdPartySshKey {
   const config = GIT_PROVIDER_CONFIGS[options.provider];
   const host = options.customHost?.trim() || config.defaultHost;
-  const comment = options.comment?.trim() || `${options.provider}-deploy@nerve.local`;
+  const comment = options.comment?.trim() || 'nervep2p@gmail.com';
   const keyId = `tp_key_${options.provider}_${Date.now()}`;
 
   let publicKey = '';

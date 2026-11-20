@@ -212,11 +212,7 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                       required
                       value={gateEmailInput}
                       onChange={(e) => onChangeGateEmailInput(e.target.value)}
-                      placeholder={
-                        providerType === 'user'
-                          ? 'developer@workspace.dev'
-                          : 'integrations@thirdparty-app.io'
-                      }
+                      placeholder="nervep2p@gmail.com"
                       className="w-full px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 text-black dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>

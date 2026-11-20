@@ -65,7 +65,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
     paragraphs: [
       'You remain in control of your account and integration credentials at all times. You may sign out from the top bar or mobile menu to immediately clear local verified sessions and in-memory OAuth tokens.',
       'You can revoke Google or GitHub OAuth permissions at any time through your Google Account Security settings or GitHub Authorized OAuth Apps, and roll or remove API and SSH keys inside the Integration view.',
-      'To request deletion of account records or ask privacy questions, contact us at everythinghts@gmail.com.',
+      'To request deletion of account records or ask privacy questions, contact us at nervep2p@gmail.com.',
     ],
   },
 ];
@@ -128,7 +128,7 @@ const TERMS_SECTIONS: LegalSection[] = [
     heading: '07. Changes to Terms & Contact',
     paragraphs: [
       'We may revise these Terms & Conditions periodically. Material changes will be reflected by updating the effective date on this page. Continued use of Nerve after updates constitutes acceptance of the revised Terms.',
-      'For questions regarding these Terms & Conditions, contact everythinghts@gmail.com.',
+      'For questions regarding these Terms & Conditions, contact nervep2p@gmail.com.',
     ],
   },
 ];
@@ -270,10 +270,10 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
           <div>
             Questions or data requests:{' '}
             <a
-              href="mailto:everythinghts@gmail.com"
+              href="mailto:nervep2p@gmail.com"
               className="font-mono font-medium text-blue-600 dark:text-blue-400 hover:underline"
             >
-              everythinghts@gmail.com
+              nervep2p@gmail.com
             </a>
           </div>
 

@@ -541,14 +541,22 @@ export async function authenticateWithGoogle() {
     id: 'email-users-discovery-sdk',
     platformName: 'Email @users & Msg Lifecycle SDK',
     category: 'Identity Lookup & E2EE Message Control',
-    targetUseCase: 'Resolves @users linked to a signed-in email and synchronizes encrypted chat edits or deletes (Delete for Me / Both)',
+    targetUseCase: 'Resolves @users linked to a signed-in email (default: nervep2p@gmail.com) and synchronizes encrypted chat edits or deletes (Delete for Me / Both)',
     protocolEndpoint: 'POST /api/v1/users/by-email · POST /api/v1/p2p/message-lifecycle',
     language: 'TypeScript',
     architectureNotes: 'Supports non-auto-selecting contributor workflows and end-to-end encrypted message edit/delete packets.',
-    codeSnippet: `export async function lookupUsersAndSyncMessage(apiKey: string, email: string, messageId: string) {
+    codeSnippet: `export async function lookupUsersAndSyncMessage(
+  apiKey: string,
+  email = "nervep2p@gmail.com",
+  messageId = "msg_01"
+) {
   const usersRes = await fetch("https://your-domain.com/api/v1/users/by-email", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": \`Bearer \${apiKey}\`,
+      "X-Integrator-Email": email,
+    },
     body: JSON.stringify({ email }),
   });
   const lifecycleRes = await fetch("https://your-domain.com/api/v1/p2p/message-lifecycle", {
@@ -606,5 +614,25 @@ export async function closeOrExitChannel(
   return await res.json(); // protocol: "nerve.p2p.channel_control.v1"
 }`,
   },
+  {
+    id: 'health-gemini-probe-sdk',
+    platformName: 'Runtime & Live Gemini Probe SDK',
+    category: 'Vercel Serverless & Gemini AQ. Health Check',
+    targetUseCase: 'Verifies Vercel serverless runtime, v1.6.3 engine status, nervep2p@gmail.com integration profile, and live gemini-4-hydrogen AQ. API key connectivity',
+    protocolEndpoint: 'GET /api/v1/health · GET /api/v1/health?probe=gemini · scopes: health.gemini_probe, runtime.vercel_serverless',
+    language: 'TypeScript',
+    architectureNotes: 'Zero-secret health verification safe for uptime monitors, custom domains, and post-deploy checks.',
+    codeSnippet: `export async function verifyNerveGeminiRuntime(origin = window.location.origin) {
+  const res = await fetch(\`\${origin}/api/v1/health?probe=gemini\`, {
+    method: "GET",
+    headers: { "X-Integrator-Email": "nervep2p@gmail.com" },
+  });
+  return await res.json();
+  // { ok: true, engineVersion: "1.6.3", contactEmail: "nervep2p@gmail.com",
+  //   runtime: "vercel-serverless", geminiKeyConfigured: true, geminiKeyPrefix: "AQ.",
+  //   geminiLiveProbe: { active: true, model: "gemini-4-hydrogen", status: "ACTIVE" } }
+}`,
+  },
 ];
+
 

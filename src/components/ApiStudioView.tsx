@@ -234,7 +234,7 @@ const API_ENDPOINTS: EndpointSpec[] = [
     summary: 'Manage authentication and signing SSH public keys directly on your GitHub account via GitHub API (/user/keys).',
     defaultBody: {
       title: 'Workstation ed25519',
-      key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8qB24rXlZ9pQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b developer@macbook-pro',
+      key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8qB24rXlZ9pQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b nervep2p@gmail.com',
       read_only: false,
     },
   },
@@ -248,7 +248,7 @@ const API_ENDPOINTS: EndpointSpec[] = [
       title: 'GitLab CI/CD Production Deploy Key',
       keyType: 'ed25519',
       host: 'gitlab.com',
-      publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq7pB3jK0wL8mN2oP4rS6tU8vW0xY2zA4bC6dE8fG0h ci-runner@gitlab.com',
+      publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq7pB3jK0wL8mN2oP4rS6tU8vW0xY2zA4bC6dE8fG0h nervep2p@gmail.com',
       purpose: 'both',
     },
   },

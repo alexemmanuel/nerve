@@ -7924,7 +7924,7 @@ export default function App() {
                       required
                       value={authEmail}
                       onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="developer@domain.com"
+                      placeholder="nervep2p@gmail.com"
                       className="w-full pl-8 pr-2.5 py-2 rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
@@ -7979,7 +7979,7 @@ export default function App() {
                       required
                       value={authEmail}
                       onChange={(e) => setAuthEmail(e.target.value)}
-                      placeholder="developer@domain.com"
+                      placeholder="nervep2p@gmail.com"
                       className="w-full pl-8 pr-2.5 py-2 rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
@@ -8388,10 +8388,10 @@ export default function App() {
           <span>© {new Date().getFullYear()} Nerve</span>
           <span aria-hidden="true">·</span>
           <a
-            href="mailto:everythinghts@gmail.com"
+            href="mailto:nervep2p@gmail.com"
             className="hover:text-black dark:hover:text-white transition-colors"
           >
-            everythinghts@gmail.com
+            nervep2p@gmail.com
           </a>
         </div>
         <div className="flex items-center gap-4">

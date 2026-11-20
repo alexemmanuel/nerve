@@ -120,7 +120,15 @@ interface IntegrationProps {
   isDark: boolean;
 }
 
-const LIVE_ENDPOINTS = [
+const NERVE_PROFILE_EMAIL = 'nervep2p@gmail.com';
+
+const LIVE_ENDPOINTS: Array<{
+  id: string;
+  label: string;
+  method?: 'GET' | 'POST';
+  path: string;
+  defaultBody: Record<string, unknown>;
+}> = [
   {
     id: 'webhook',
     label: 'Webhook',
@@ -354,7 +362,7 @@ const LIVE_ENDPOINTS = [
     path: '/api/v1/github/ssh-keys',
     defaultBody: {
       title: 'Workstation ed25519',
-      key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8qB24rXlZ9pQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b developer@macbook-pro',
+      key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8qB24rXlZ9pQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b nervep2p@gmail.com',
       read_only: false,
     },
   },
@@ -411,7 +419,7 @@ const LIVE_ENDPOINTS = [
     label: '25. Email @users',
     path: '/api/v1/users/by-email',
     defaultBody: {
-      email: 'developer@github.com',
+      email: NERVE_PROFILE_EMAIL,
     },
   },
   {
@@ -449,6 +457,16 @@ const LIVE_ENDPOINTS = [
       channelId: 'nerve-shark',
       command: '/exit',
       isSharkThinking: true,
+    },
+  },
+  {
+    id: 'health_gemini_probe',
+    label: '28. Health & Gemini Probe',
+    method: 'GET',
+    path: '/api/v1/health?probe=gemini',
+    defaultBody: {
+      probe: 'gemini',
+      contactEmail: NERVE_PROFILE_EMAIL,
     },
   },
 ];
@@ -567,6 +585,59 @@ export const Integration: React.FC<IntegrationProps> = ({
   const [isCallingEngine, setIsCallingEngine] = useState<boolean>(false);
   const [copiedEngineFetch, setCopiedEngineFetch] = useState<boolean>(false);
 
+  // Synced Integration Profile & Live Runtime Health State
+  const [profileHealth, setProfileHealth] = useState<{
+    engineVersion: string;
+    contactEmail: string;
+    runtime: string;
+    geminiModel: string;
+    geminiKeyConfigured: boolean;
+    geminiKeyPrefix: string;
+    geminiLiveProbe?: {
+      active: boolean;
+      model: string;
+      latencyMs: number;
+      status?: string;
+      error?: string;
+    };
+  }>({
+    engineVersion: '1.6.3',
+    contactEmail: NERVE_PROFILE_EMAIL,
+    runtime: 'vercel-serverless',
+    geminiModel: 'gemini-4-hydrogen',
+    geminiKeyConfigured: false,
+    geminiKeyPrefix: 'checking',
+  });
+  const [isProbingGemini, setIsProbingGemini] = useState<boolean>(false);
+
+  const fetchRuntimeProfileHealth = async (runLiveGeminiProbe = false) => {
+    if (runLiveGeminiProbe) setIsProbingGemini(true);
+    try {
+      const url = runLiveGeminiProbe ? '/api/v1/health?probe=gemini' : '/api/v1/health';
+      const res = await fetch(url, {
+        headers: {
+          'X-Integrator-Email': integrationVerifiedEmail || NERVE_PROFILE_EMAIL,
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setProfileHealth({
+          engineVersion: data.engineVersion || '1.6.3',
+          contactEmail: data.contactEmail || NERVE_PROFILE_EMAIL,
+          runtime: data.runtime || 'vercel-serverless',
+          geminiModel: data.geminiModel || 'gemini-4-hydrogen',
+          geminiKeyConfigured: Boolean(data.geminiKeyConfigured),
+          geminiKeyPrefix: data.geminiKeyPrefix || 'missing',
+          geminiLiveProbe: data.geminiLiveProbe,
+        });
+      }
+    } catch {
+      // Keep last known profile defaults if offline
+    } finally {
+      if (runLiveGeminiProbe) setIsProbingGemini(false);
+    }
+  };
+
   useEffect(() => {
     const sealed = isKeySealed(activeKey);
     setActiveKeySealed(sealed);
@@ -681,9 +752,7 @@ export const Integration: React.FC<IntegrationProps> = ({
     setIsVerifyingGate(true);
     try {
       const result = await signInWithPopup(auth, googleStandardProvider);
-      const confirmedEmail =
-        result.user?.email ||
-        `${result.user?.displayName?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'google'}@gmail.com`;
+      const confirmedEmail = result.user?.email || NERVE_PROFILE_EMAIL;
       try {
         await fetch('/api/v1/integration/request-access', {
           method: 'POST',
@@ -737,9 +806,7 @@ export const Integration: React.FC<IntegrationProps> = ({
     setIsVerifyingGate(true);
     try {
       const result = await signInWithPopup(auth, githubProvider);
-      const confirmedEmail =
-        result.user?.email ||
-        `${result.user?.displayName?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'github'}@github.com`;
+      const confirmedEmail = result.user?.email || NERVE_PROFILE_EMAIL;
       try {
         await fetch('/api/v1/integration/request-access', {
           method: 'POST',
@@ -818,12 +885,12 @@ export const Integration: React.FC<IntegrationProps> = ({
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${activeKey}`,
-          'X-Integrator-Email': integrationVerifiedEmail || 'thirdparty@external-app.io',
+          'X-Integrator-Email': integrationVerifiedEmail || NERVE_PROFILE_EMAIL,
         },
         body: JSON.stringify({
           engine: selectedEngineModule,
           action: 'execute',
-          callerEmail: integrationVerifiedEmail || 'thirdparty@external-app.io',
+          callerEmail: integrationVerifiedEmail || NERVE_PROFILE_EMAIL,
           payload: {
             repo: trackedRepoKeys[0] || 'owner/repository',
             branch: 'main',
@@ -1140,7 +1207,7 @@ export const Integration: React.FC<IntegrationProps> = ({
           {
             id: 9812401,
             title: 'Personal MacBook Pro (ed25519)',
-            key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8qB24rXlZ9pQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b developer@macbook-pro',
+            key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8qB24rXlZ9pQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b nervep2p@gmail.com',
             fingerprint: 'SHA256:d8Q+03h7ZpQ9Z8g7eYf6m5l4k3j2h1g0f9e8d7c6b4a',
             verified: true,
             read_only: false,
@@ -1231,7 +1298,7 @@ export const Integration: React.FC<IntegrationProps> = ({
     setNewGitHubKeyBody(
       `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${Math.random()
         .toString(36)
-        .substring(2, 12)}k3j2h1g0f9e8d7c6b4a developer@github-${randomHex}`
+        .substring(2, 12)}k3j2h1g0f9e8d7c6b4a ${NERVE_PROFILE_EMAIL}`
     );
     setGitHubKeyError('');
   };
@@ -1328,6 +1395,7 @@ export const Integration: React.FC<IntegrationProps> = ({
     fetchCiStatusFeed();
     fetchSshKeys();
     fetchGitHubSshKeys();
+    fetchRuntimeProfileHealth(false);
     const interval = setInterval(fetchCiStatusFeed, 8000);
     return () => clearInterval(interval);
   }, [activeKey, repositories, selectedChartRepo]);
@@ -1629,15 +1697,20 @@ export const Integration: React.FC<IntegrationProps> = ({
   const handleExecuteEndpoint = async () => {
     setIsExecuting(true);
     try {
-      const parsedBody = JSON.parse(requestJson);
-      const res = await fetch(activeEndpoint.path, {
-        method: 'POST',
+      const method = activeEndpoint.method || 'POST';
+      const fetchInit: RequestInit = {
+        method,
         headers: {
-          'Content-Type': 'application/json',
           Authorization: `Bearer ${activeKey}`,
+          'X-Integrator-Email': integrationVerifiedEmail || NERVE_PROFILE_EMAIL,
+          ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
         },
-        body: JSON.stringify(parsedBody),
-      });
+      };
+      if (method === 'POST') {
+        const parsedBody = JSON.parse(requestJson);
+        fetchInit.body = JSON.stringify(parsedBody);
+      }
+      const res = await fetch(activeEndpoint.path, fetchInit);
       const data = await res.json();
       setResponseJson(JSON.stringify(data, null, 2));
       fetchCiStatusFeed();
@@ -1689,7 +1762,7 @@ const response = await fetch(\`\${window.location.origin}/api/v1/engine/call\`, 
   headers: {
     'Content-Type': 'application/json',
     'Authorization': 'Bearer ${activeKeySealed ? maskSecretKey(activeKey) : activeKey}',
-    'X-Integrator-Email': '${integrationVerifiedEmail || 'integrator@thirdparty-app.io'}'
+    'X-Integrator-Email': '${integrationVerifiedEmail || NERVE_PROFILE_EMAIL}'
   },
   body: JSON.stringify({
     engine: '${selectedEngineModule}',
@@ -1797,6 +1870,92 @@ const data = await response.json();`;
             </button>
           </div>
         )}
+      </div>
+
+      {/* 0. Synced Integration Profile & Live Runtime Configuration */}
+      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <div>
+              <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
+                Integration Profile &amp; Active Runtime Configuration
+              </h2>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Synced with latest Nerve v{profileHealth.engineVersion}, custom-domain ready CORS API, and server-side Gemini AI.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={isProbingGemini}
+            onClick={() => fetchRuntimeProfileHealth(true)}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer self-start sm:self-auto whitespace-nowrap shrink-0"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isProbingGemini ? 'animate-spin' : ''}`} />
+            <span>{isProbingGemini ? 'Verifying Gemini...' : 'Verify Live Gemini'}</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+          <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Platform Contact Email
+            </div>
+            <div className="font-mono font-semibold text-slate-900 dark:text-slate-100 truncate">
+              {profileHealth.contactEmail}
+            </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+              Active session: {integrationVerifiedEmail}
+            </div>
+          </div>
+
+          <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Engine &amp; Origin
+            </div>
+            <div className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+              v{profileHealth.engineVersion} · {profileHealth.runtime}
+            </div>
+            <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate">
+              {originBase}
+            </div>
+          </div>
+
+          <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Nerve Shark Model
+            </div>
+            <div className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+              {profileHealth.geminiModel}
+            </div>
+            <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+              Key:{' '}
+              {profileHealth.geminiKeyConfigured
+                ? `Configured (${profileHealth.geminiKeyPrefix})`
+                : profileHealth.geminiKeyPrefix === 'checking'
+                ? 'Checking...'
+                : 'Not configured'}
+            </div>
+          </div>
+
+          <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Live Gemini Probe
+            </div>
+            <div className="font-mono font-semibold text-slate-900 dark:text-slate-100">
+              {profileHealth.geminiLiveProbe
+                ? profileHealth.geminiLiveProbe.active
+                  ? `ACTIVE (${profileHealth.geminiLiveProbe.latencyMs}ms)`
+                  : 'ERROR'
+                : 'Ready (on-demand)'}
+            </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+              {profileHealth.geminiLiveProbe?.error || 'On-demand prompt · /exit & AbortController'}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* 1. Real-Time CI/CD Build Health Feed */}
@@ -2231,6 +2390,8 @@ const data = await response.json();`;
               'auth.google_provider_oauth',
               'auth.google_oauth',
               'github.ssh_keys_manage',
+              'health.gemini_probe',
+              'runtime.vercel_serverless',
             ].map((scope) => (
               <span
                 key={scope}
@@ -2282,7 +2443,8 @@ const data = await response.json();`;
               className="px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 cursor-pointer"
             >
               <option value="nerve_shark">Engine: nerve_shark (Nerve Shark On-Demand gemini-4-hydrogen)</option>
-              <option value="p2p_channel_control">Engine: p2p_channel_control (Close Chat, Cancel Shark & /exit Syntax)</option>
+              <option value="health_probe">Engine: health_probe (Vercel Runtime, nervep2p@gmail.com &amp; Gemini AQ. Check)</option>
+              <option value="p2p_channel_control">Engine: p2p_channel_control (Close Chat, Cancel Shark &amp; /exit Syntax)</option>
               <option value="p2p_message_search">Engine: p2p_message_search (In-Chat Message Search & Highlight)</option>
               <option value="p2p_message_lifecycle">Engine: p2p_message_lifecycle (E2EE Edit & Delete for Me/Both)</option>
               <option value="users_by_email">Engine: users_by_email (Email-Linked @users Lookup)</option>
@@ -2942,7 +3104,11 @@ const data = await response.json();`;
             className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1.5 cursor-pointer self-start"
           >
             <Play className="w-3 h-3" />
-            <span>{isExecuting ? 'Running...' : `POST ${activeEndpoint.path}`}</span>
+            <span>
+              {isExecuting
+                ? 'Running...'
+                : `${activeEndpoint.method || 'POST'} ${activeEndpoint.path}`}
+            </span>
           </button>
         </div>
 
@@ -2979,7 +3145,7 @@ const data = await response.json();`;
               <pre className="whitespace-pre-wrap">{responseJson}</pre>
             ) : (
               <div className="h-full flex items-center justify-center text-slate-500 dark:text-slate-400 text-center text-xs">
-                POST {activeEndpoint.path}
+                {activeEndpoint.method || 'POST'} {activeEndpoint.path}
               </div>
             )}
           </div>
