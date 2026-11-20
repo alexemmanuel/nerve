@@ -93,6 +93,122 @@ export interface ChatMessage {
   };
 }
 
+export type ChatMessageSearchMatchField =
+  | 'text'
+  | 'senderName'
+  | 'senderHandle'
+  | 'timestamp'
+  | 'parsedLinks'
+  | 'incidentTicket'
+  | 'copilotPatch'
+  | 'sharedCodeSnippet';
+
+export interface ChatMessageSearchRequest {
+  channelId: string;
+  peerHandle?: string;
+  query: string;
+  messages: ChatMessage[];
+}
+
+export interface ChatMessageSearchMatch {
+  message: ChatMessage;
+  matchedFields: ChatMessageSearchMatchField[];
+}
+
+export interface ChatMessageSearchResponse {
+  protocol: 'nerve.p2p.message_search.v1';
+  status: 'OK';
+  scope: 'p2p.message_search';
+  channelId: string;
+  query: string;
+  caseSensitive: false;
+  indexedFields: ChatMessageSearchMatchField[];
+  matchCount: number;
+  totalCount: number;
+  matches: ChatMessageSearchMatch[];
+  timestamp: string;
+}
+
+export function searchChatMessages(
+  messages: ChatMessage[],
+  rawQuery: string
+): ChatMessageSearchMatch[] {
+  const normalized = rawQuery.trim().toLowerCase();
+  if (!normalized) {
+    return messages.map((message) => ({ message, matchedFields: [] }));
+  }
+
+  const results: ChatMessageSearchMatch[] = [];
+  for (const msg of messages) {
+    const matchedFields: ChatMessageSearchMatchField[] = [];
+    if (msg.text?.toLowerCase().includes(normalized)) matchedFields.push('text');
+    if (msg.senderName?.toLowerCase().includes(normalized)) matchedFields.push('senderName');
+    if (msg.senderHandle?.toLowerCase().includes(normalized)) matchedFields.push('senderHandle');
+    if (msg.timestamp?.toLowerCase().includes(normalized)) matchedFields.push('timestamp');
+    if (
+      msg.parsedLinks?.some(
+        (l) =>
+          l.repo.toLowerCase().includes(normalized) ||
+          l.branch.toLowerCase().includes(normalized) ||
+          l.filePath.toLowerCase().includes(normalized)
+      )
+    ) {
+      matchedFields.push('parsedLinks');
+    }
+    if (
+      msg.incidentTicket &&
+      (msg.incidentTicket.ticketId.toLowerCase().includes(normalized) ||
+        msg.incidentTicket.status.toLowerCase().includes(normalized))
+    ) {
+      matchedFields.push('incidentTicket');
+    }
+    if (
+      msg.copilotPatch &&
+      (msg.copilotPatch.suggestedPatch.toLowerCase().includes(normalized) ||
+        msg.copilotPatch.prTitle.toLowerCase().includes(normalized))
+    ) {
+      matchedFields.push('copilotPatch');
+    }
+    if (
+      msg.sharedCodeSnippet &&
+      (msg.sharedCodeSnippet.filePath.toLowerCase().includes(normalized) ||
+        msg.sharedCodeSnippet.lines.some((line) => line.toLowerCase().includes(normalized)))
+    ) {
+      matchedFields.push('sharedCodeSnippet');
+    }
+
+    if (matchedFields.length > 0) {
+      results.push({ message: msg, matchedFields });
+    }
+  }
+  return results;
+}
+
+export type ChannelControlAction = 'close' | 'cancel_shark' | 'open_shark';
+
+export interface ChannelControlRequest {
+  action?: ChannelControlAction;
+  command?: string;
+  channelId: string;
+  isSharkThinking?: boolean;
+}
+
+export interface ChannelControlResponse {
+  protocol: 'nerve.p2p.channel_control.v1';
+  status: 'EXECUTED' | 'IGNORED';
+  scope: 'p2p.channel_control' | 'shark.cancel';
+  channelId: string;
+  command?: string;
+  matchedExitSyntax: boolean;
+  resolvedAction: 'close_channel' | 'cancel_shark' | 'open_shark_on_demand' | 'noop';
+  channelClosed: boolean;
+  sharkRequestAborted: boolean;
+  autoPromptOnSharkOpen: false;
+  clearedState: string[];
+  supportedExitSyntax: string[];
+  timestamp: string;
+}
+
 export interface SdkPlatformSpec {
   id: string;
   platformName: string;
@@ -399,16 +515,24 @@ export async function authenticateWithGoogle() {
   {
     id: 'nerve-shark-sdk',
     platformName: 'Nerve Shark AI SDK',
-    category: 'Standalone & Peer AI Collaboration',
-    targetUseCase: 'Invokes Nerve Shark (gemini-4-hydrogen) with or without a selected peer contributor for real-time code analysis and patches',
-    protocolEndpoint: 'POST /api/v1/copilot/collaborate',
+    category: 'On-Demand AI Collaboration & Cancellation',
+    targetUseCase: 'Opens Nerve Shark on-demand (no auto-prompt), invokes gemini-4-hydrogen (AQ. / AIza GEMINI_API_KEY), and supports AbortController cancellation',
+    protocolEndpoint: 'POST /api/v1/copilot/collaborate · scopes: shark.collaborate, shark.cancel',
     language: 'TypeScript',
-    architectureNotes: 'Returns structured patches, verification commands, and PR titles via nerve.shark.v1 with local fallback when offline or static.',
-    codeSnippet: `export async function invokeNerveShark(apiKey: string, prompt: string, repo: string, filePath: string, codeSnippet?: string) {
+    architectureNotes: 'Waits for explicit user prompt, supports modern AQ. Gemini API keys server-side, and aborts cleanly via AbortController.',
+    codeSnippet: `export async function invokeNerveShark(
+  apiKey: string,
+  prompt: string,
+  repo: string,
+  filePath: string,
+  signal?: AbortSignal
+) {
+  if (!prompt.trim()) throw new Error("Explicit prompt required");
   const res = await fetch("https://your-domain.com/api/v1/copilot/collaborate", {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
-    body: JSON.stringify({ prompt, repo, branch: "main", filePath, codeSnippet }),
+    body: JSON.stringify({ prompt, repo, branch: "main", filePath }),
   });
   return await res.json(); // protocol: "nerve.shark.v1", model: "gemini-4-hydrogen"
 }`,
@@ -433,6 +557,53 @@ export async function authenticateWithGoogle() {
     body: JSON.stringify({ action: "delete", scope: "both", messageId }),
   });
   return { connectedUsers: await usersRes.json(), messageSync: await lifecycleRes.json() };
+}`,
+  },
+  {
+    id: 'p2p-message-search-sdk',
+    platformName: 'P2P Message Search SDK',
+    category: 'In-Chat Message Search & Highlighting',
+    targetUseCase: 'Searches past messages within a selected P2P or Nerve Shark chat across text, senders, deep links, /bug tickets, code snippets, and Shark patches',
+    protocolEndpoint: 'POST /api/v1/p2p/messages/search · scope: p2p.message_search',
+    language: 'TypeScript',
+    architectureNotes: 'Performs case-insensitive multi-field search matching the exact ChatMessageSearchRequest / ChatMessageSearchResponse contract.',
+    codeSnippet: `import type { ChatMessage, ChatMessageSearchResponse } from "./data/mockWorkspaceData";
+
+export async function searchSelectedChatMessages(
+  apiKey: string,
+  channelId: string,
+  query: string,
+  messages: ChatMessage[]
+): Promise<ChatMessageSearchResponse> {
+  const res = await fetch("https://your-domain.com/api/v1/p2p/messages/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
+    body: JSON.stringify({ channelId, query, messages }),
+  });
+  return await res.json(); // protocol: "nerve.p2p.message_search.v1"
+}`,
+  },
+  {
+    id: 'p2p-channel-control-sdk',
+    platformName: 'Channel Close & Exit Syntax SDK',
+    category: 'Channel Lifecycle & Shark Abort',
+    targetUseCase: 'Closes open peer chats or Nerve Shark channels, cancels in-flight AI requests, and evaluates typed exit commands (/exit, :q, /cancel shark)',
+    protocolEndpoint: 'POST /api/v1/p2p/channel-control · scopes: p2p.channel_control, shark.cancel',
+    language: 'TypeScript',
+    architectureNotes: 'Mirrors the workspace exit command parser and AbortController cancellation behavior for third-party clients.',
+    codeSnippet: `import type { ChannelControlResponse } from "./data/mockWorkspaceData";
+
+export async function closeOrExitChannel(
+  apiKey: string,
+  channelId: string,
+  command = "/exit"
+): Promise<ChannelControlResponse> {
+  const res = await fetch("https://your-domain.com/api/v1/p2p/channel-control", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
+    body: JSON.stringify({ channelId, command }),
+  });
+  return await res.json(); // protocol: "nerve.p2p.channel_control.v1"
 }`,
   },
 ];

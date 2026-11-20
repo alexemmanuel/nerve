@@ -57,6 +57,7 @@ import {
   ChatReaction,
   RepositoryContext,
   IncidentTicket,
+  searchChatMessages,
 } from './data/mockWorkspaceData';
 import {
   IncidentWorkflowReport,
@@ -551,6 +552,7 @@ export default function App() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState<string>('');
   const [confirmDeleteMessageId, setConfirmDeleteMessageId] = useState<string | null>(null);
+  const [chatMessageSearchQuery, setChatMessageSearchQuery] = useState<string>('');
   const [p2pRoomId, setP2pRoomId] = useState<string>('nerve-core-room');
   const [p2pPassphrase, setP2pPassphrase] = useState<string>(() =>
     getEnvEncodedStorage('nerve_p2p_passphrase', 'nerve-aes-256-secret-key')
@@ -578,9 +580,15 @@ export default function App() {
     };
   }, [activeReactionPickerMessageId]);
 
+  useEffect(() => {
+    setChatMessageSearchQuery('');
+  }, [selectedPeerHandle]);
+
   const [repositories, setRepositories] = useState<Record<string, RepositoryContext>>({});
   const [composerText, setComposerText] = useState<string>('');
   const [isSharkThinking, setIsSharkThinking] = useState<boolean>(false);
+  const sharkAbortControllerRef = useRef<AbortController | null>(null);
+  const sharkRequestIdRef = useRef<number>(0);
 
   // Code & Codespace Drawer persisted via localStorage hook across browser refreshes
   const [isCodeDrawerOpen, setIsCodeDrawerOpen] = useState<boolean>(true);
@@ -2424,6 +2432,30 @@ export default function App() {
 
   const activePeerKey = activePeer?.handle || selectedPeerHandle || '';
   const currentMessages = activePeerKey ? messagesByPeer[activePeerKey] || [] : [];
+  const trimmedChatSearch = chatMessageSearchQuery.trim();
+  const filteredCurrentMessages = trimmedChatSearch
+    ? searchChatMessages(currentMessages, trimmedChatSearch).map((m) => m.message)
+    : currentMessages;
+
+  const renderHighlightedMessageText = (text: string, query: string): React.ReactNode => {
+    const cleanQuery = query.trim();
+    if (!cleanQuery) return text;
+    const escaped = cleanQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escaped})`, 'gi');
+    const parts = text.split(regex);
+    return parts.map((part, idx) =>
+      part.toLowerCase() === cleanQuery.toLowerCase() ? (
+        <mark
+          key={`${idx}-${part}`}
+          className="px-0.5 rounded bg-blue-500/20 text-blue-700 dark:text-blue-300 font-medium"
+        >
+          {part}
+        </mark>
+      ) : (
+        <React.Fragment key={`${idx}-${part}`}>{part}</React.Fragment>
+      )
+    );
+  };
 
   const authenticatedDisplayName =
     currentUser?.displayName || emailSession?.displayName || currentUser?.email || emailSession?.email || '';
@@ -2791,11 +2823,49 @@ export default function App() {
     }
   };
 
+  const handleCancelNerveShark = () => {
+    sharkRequestIdRef.current += 1;
+    if (sharkAbortControllerRef.current) {
+      sharkAbortControllerRef.current.abort();
+      sharkAbortControllerRef.current = null;
+    }
+    setIsSharkThinking(false);
+  };
+
+  const handleCloseActiveChannel = () => {
+    handleCancelNerveShark();
+    setSelectedPeerHandle('');
+    setComposerText('');
+    setChatMessageSearchQuery('');
+    setEditingMessageId(null);
+    setEditingMessageText('');
+    setConfirmDeleteMessageId(null);
+    setActiveReactionPickerMessageId(null);
+  };
+
   const handleSendMessage = async (e?: React.FormEvent, overrideText?: string) => {
     if (e) e.preventDefault();
     const rawSource = overrideText !== undefined ? overrideText : composerText;
     const trimmed = rawSource.trim();
     if (!trimmed) return;
+
+    // Support exit/close/cancel syntax to exit active message channel or Nerve Shark
+    const exitChannelRegex =
+      /^(\/?(exit|close|quit|cancel|leave)|exit\(\)|:q!?)(\s+(chat|message|messages|shark|nerve\s*shark))?$/i;
+    if (exitChannelRegex.test(trimmed)) {
+      const cancelSharkOnly =
+        /^\/?cancel\s+(shark|nerve\s*shark)$/i.test(trimmed) &&
+        isSharkThinking &&
+        Boolean(activePeer) &&
+        !isSharkChannelActive;
+      if (cancelSharkOnly) {
+        handleCancelNerveShark();
+        if (overrideText === undefined) setComposerText('');
+      } else {
+        handleCloseActiveChannel();
+      }
+      return;
+    }
 
     // Support 'clr terminal' syntax to reset terminal logs directly
     if (trimmed.toLowerCase() === 'clr terminal') {
@@ -2973,10 +3043,38 @@ export default function App() {
     }
   };
 
+  const handleOpenNerveSharkChannel = () => {
+    if (canOpenP2PChannel && activePeer) {
+      const existingDraft = composerText.trim();
+      if (existingDraft) {
+        const promptWithTag = existingDraft.toLowerCase().includes('@shark')
+          ? existingDraft
+          : `@shark ${existingDraft}`;
+        setComposerText('');
+        void handleSendMessage(undefined, promptWithTag);
+        return;
+      }
+      setComposerText('@shark ');
+      setTimeout(() => chatComposerInputRef.current?.focus(), 0);
+      return;
+    }
+
+    if (selectedPeerHandle !== 'nerve-shark') {
+      setSelectedPeerHandle('nerve-shark');
+    }
+    setTimeout(() => chatComposerInputRef.current?.focus(), 0);
+  };
+
   const handleInvokeNerveShark = async (
     customPrompt?: string,
     explicitChannelKey?: string
   ) => {
+    const resolvedPrompt = (customPrompt || '').trim();
+    if (!resolvedPrompt) {
+      handleOpenNerveSharkChannel();
+      return;
+    }
+
     const canUsePeer = Boolean(activePeer && canOpenP2PChannel);
     const targetChannelKey =
       explicitChannelKey || (canUsePeer && activePeer ? activePeer.handle : 'nerve-shark');
@@ -2985,13 +3083,18 @@ export default function App() {
       setSelectedPeerHandle('nerve-shark');
     }
 
+    sharkRequestIdRef.current += 1;
+    const requestId = sharkRequestIdRef.current;
+    if (sharkAbortControllerRef.current) {
+      sharkAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    sharkAbortControllerRef.current = controller;
+
     setIsSharkThinking(true);
     const targetRepoName = activeRepo?.repo || bugRepo || 'owner/repository';
     const targetBranchName = activeRepo?.branch || bugBranch || 'main';
     const targetFileName = activeFile?.path || bugFile || 'src/index.ts';
-    const resolvedPrompt =
-      customPrompt ||
-      `Analyze ${targetFileName} at line ${highlightedLine || 1} in ${targetRepoName} and propose a clean fix.`;
 
     const buildLocalSharkFallback = () => {
       const focusSnippet = displayedCodeLines
@@ -3012,6 +3115,7 @@ export default function App() {
       try {
         const res = await fetch('/api/v1/copilot/collaborate', {
           method: 'POST',
+          signal: controller.signal,
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${apiKey}`,
@@ -3031,8 +3135,15 @@ export default function App() {
             data = parsed;
           }
         }
-      } catch {
+      } catch (err: any) {
+        if (controller.signal.aborted || err?.name === 'AbortError' || requestId !== sharkRequestIdRef.current) {
+          return;
+        }
         // Use local fallback when backend is unreachable (e.g. static deployment or offline)
+      }
+
+      if (controller.signal.aborted || requestId !== sharkRequestIdRef.current) {
+        return;
       }
 
       if (!data) {
@@ -3063,7 +3174,10 @@ export default function App() {
         p2pEngine.sendEncryptedChatMessage(sharkMsg);
       }
     } finally {
-      setIsSharkThinking(false);
+      if (requestId === sharkRequestIdRef.current) {
+        sharkAbortControllerRef.current = null;
+        setIsSharkThinking(false);
+      }
     }
   };
 
@@ -3966,10 +4080,7 @@ export default function App() {
             setIsCodeDrawerOpen(true);
             setShowTerminal(true);
             setShowFileExplorer(true);
-            setActiveReactionPickerMessageId(null);
-            setEditingMessageId(null);
-            setEditingMessageText('');
-            setConfirmDeleteMessageId(null);
+            handleCloseActiveChannel();
             setActiveTab('workspace');
             window.scrollTo({ top: 0, behavior: 'auto' });
           }}
@@ -4728,7 +4839,12 @@ export default function App() {
                       >
                         <button
                           type="button"
-                          onClick={() => setSelectedPeerHandle(peer.handle)}
+                          onClick={() =>
+                            isSelected
+                              ? handleCloseActiveChannel()
+                              : setSelectedPeerHandle(peer.handle)
+                          }
+                          title={isSelected ? `Close @${peer.handle} chat` : `Open @${peer.handle} chat`}
                           className="flex items-center gap-1.5 cursor-pointer"
                         >
                           {peer.avatarUrl ? (
@@ -4805,14 +4921,39 @@ export default function App() {
                     Focus: {globalFocusSwitch ? 'ON' : 'OFF'}
                   </button>
 
-                  <button
-                    onClick={() => handleInvokeNerveShark()}
-                    disabled={isSharkThinking}
-                    className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <Code2 className="w-3.5 h-3.5" />
-                    <span>{isSharkThinking ? '...' : 'Nerve Shark'}</span>
-                  </button>
+                  {isSharkThinking ? (
+                    <button
+                      type="button"
+                      onClick={handleCancelNerveShark}
+                      title="Cancel Nerve Shark request"
+                      className="px-2.5 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-500 rounded-lg flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Cancel Shark</span>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={handleOpenNerveSharkChannel}
+                        className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <Code2 className="w-3.5 h-3.5" />
+                        <span>Nerve Shark</span>
+                      </button>
+                      {isSharkChannelActive && (
+                        <button
+                          type="button"
+                          onClick={handleCloseActiveChannel}
+                          title="Close Nerve Shark"
+                          aria-label="Close Nerve Shark"
+                          className="p-1 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:border-red-500 hover:text-red-500 rounded-lg cursor-pointer shrink-0"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   <button
                     onClick={() => setIsCodeDrawerOpen(!isCodeDrawerOpen)}
@@ -5043,11 +5184,19 @@ export default function App() {
                 </div>
               </div>
             ) : !isSharkChannelActive && !hasProofOfWork ? (
-              <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-2">
+              <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
                 <ShieldAlert className="w-6 h-6 text-red-500" />
                 <h3 className="text-xs font-bold text-black dark:text-white">
                   Blocked by Proof-of-Work Gate (&lt;15 Commits)
                 </h3>
+                <button
+                  type="button"
+                  onClick={handleCloseActiveChannel}
+                  className="px-3 py-1.5 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 rounded-lg flex items-center gap-1 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Close</span>
+                </button>
               </div>
             ) : !isSharkChannelActive && !isMutualFollow && activePeer ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
@@ -5055,13 +5204,23 @@ export default function App() {
                 <h3 className="text-xs font-bold text-black dark:text-white">
                   Mutual Follow Required with @{activePeer.handle}
                 </h3>
-                <button
-                  onClick={() => handleToggleFollowPeer(activePeer.handle)}
-                  className="px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1.5 cursor-pointer"
-                >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span>Follow @{activePeer.handle}</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleToggleFollowPeer(activePeer.handle)}
+                    className="px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Follow @{activePeer.handle}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCloseActiveChannel}
+                    className="px-3 py-1.5 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 rounded-lg flex items-center gap-1 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Close</span>
+                  </button>
+                </div>
               </div>
             ) : !isSharkChannelActive && (globalFocusSwitch || activePeer?.focusModeOptOut) ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
@@ -5071,25 +5230,102 @@ export default function App() {
                     ? 'Focus Mode Active'
                     : `${activePeer?.name || 'Peer'} is in Focus Mode`}
                 </h3>
-                {globalFocusSwitch && (
+                <div className="flex items-center gap-2">
+                  {globalFocusSwitch && (
+                    <button
+                      onClick={() => setGlobalFocusSwitch(false)}
+                      className="px-3.5 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
+                    >
+                      Resume
+                    </button>
+                  )}
                   <button
-                    onClick={() => setGlobalFocusSwitch(false)}
-                    className="px-3.5 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
+                    type="button"
+                    onClick={handleCloseActiveChannel}
+                    className="px-3 py-1.5 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 rounded-lg flex items-center gap-1 cursor-pointer"
                   >
-                    Resume
+                    <X className="w-3.5 h-3.5" />
+                    <span>Close</span>
                   </button>
-                )}
+                </div>
               </div>
             ) : (
-              <div className="flex-1 p-3 sm:p-5 space-y-3 overflow-y-auto max-h-[calc(100vh-210px)]">
-                {currentMessages.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-xs text-black/60 dark:text-white/60 py-12">
-                    {isSharkChannelActive
-                      ? 'Nerve Shark channel active. Ask a question, paste `owner/repo#branch/file:L10`, or run `/bug`.'
-                      : `E2EE channel open with @${activePeer?.handle || 'peer'} (AES-GCM-256). Send a message, \`owner/repo#branch/file:L10\`, \`@shark\`, or \`/bug\`.`}
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Active Channel Bar & In-Chat Message Search */}
+                <div className="px-3 sm:px-5 py-2 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black flex items-center gap-2">
+                  <span className="text-[11px] font-mono font-semibold text-black dark:text-white whitespace-nowrap shrink-0">
+                    {isSharkChannelActive ? 'Nerve Shark' : `@${activePeer?.handle || 'peer'}`}
+                  </span>
+                  <div className="relative flex-1 min-w-0">
+                    <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={chatMessageSearchQuery}
+                      onChange={(e) => setChatMessageSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape' && chatMessageSearchQuery) {
+                          setChatMessageSearchQuery('');
+                        }
+                      }}
+                      aria-label="Search past messages in selected chat"
+                      placeholder={
+                        isSharkChannelActive
+                          ? 'Search messages in Nerve Shark...'
+                          : `Search past messages with @${activePeer?.handle || 'peer'}...`
+                      }
+                      className="w-full pl-8 pr-7 py-1.5 text-xs rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white placeholder:text-neutral-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    {chatMessageSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setChatMessageSearchQuery('')}
+                        aria-label="Clear message search"
+                        title="Clear search"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-neutral-400 hover:text-black dark:hover:text-white cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  currentMessages.map((msg) => (
+                  {trimmedChatSearch && (
+                    <span className="text-[11px] font-mono text-black/70 dark:text-white/70 whitespace-nowrap shrink-0 tabular-nums">
+                      {filteredCurrentMessages.length} / {currentMessages.length}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleCloseActiveChannel}
+                    title={isSharkChannelActive ? 'Close Nerve Shark (or type /exit)' : 'Close chat (or type /exit)'}
+                    aria-label={isSharkChannelActive ? 'Close Nerve Shark' : 'Close chat'}
+                    className="px-2 py-1 text-[11px] font-medium text-black/80 dark:text-white/80 hover:text-red-600 dark:hover:text-red-400 border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black rounded-lg flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                    <span>Close</span>
+                  </button>
+                </div>
+
+                <div className="flex-1 p-3 sm:p-5 space-y-3 overflow-y-auto max-h-[calc(100vh-255px)]">
+                  {currentMessages.length === 0 ? (
+                    <div className="h-full flex items-center justify-center text-xs text-black/60 dark:text-white/60 py-12">
+                      {isSharkChannelActive
+                        ? 'Nerve Shark channel active. Ask a question, paste `owner/repo#branch/file:L10`, or run `/bug`.'
+                        : `E2EE channel open with @${activePeer?.handle || 'peer'} (AES-GCM-256). Send a message, \`owner/repo#branch/file:L10\`, \`@shark\`, or \`/bug\`.`}
+                    </div>
+                  ) : filteredCurrentMessages.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center gap-2 text-center py-12">
+                      <p className="text-xs text-black/60 dark:text-white/60">
+                        No past messages matching &quot;{trimmedChatSearch}&quot;.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setChatMessageSearchQuery('')}
+                        className="px-2.5 py-1 rounded-lg text-[11px] font-medium border border-neutral-200 dark:border-neutral-800 text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        Clear search
+                      </button>
+                    </div>
+                  ) : (
+                    filteredCurrentMessages.map((msg) => (
                     <div
                       key={msg.id}
                       className={`relative group rounded-xl border p-3.5 space-y-2 max-w-2xl ${
@@ -5201,7 +5437,7 @@ export default function App() {
                         </div>
                       ) : (
                         <p className="text-xs sm:text-sm text-black dark:text-white leading-relaxed">
-                          {msg.text}
+                          {renderHighlightedMessageText(msg.text, trimmedChatSearch)}
                         </p>
                       )}
 
@@ -5479,8 +5715,9 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                  ))
-                )}
+                    ))
+                  )}
+                </div>
               </div>
             )}
 
@@ -5529,9 +5766,9 @@ export default function App() {
                   onChange={(e) => setComposerText(e.target.value)}
                   placeholder={
                     isSharkChannelActive
-                      ? 'Ask Nerve Shark about this repo/file, or type /bug...'
+                      ? 'Ask Nerve Shark about this repo/file, /bug, or /exit to close...'
                       : canOpenP2PChannel
-                      ? 'Message, repo#branch/file:L42, @shark, or /bug... (Ctrl+Shift+C)'
+                      ? 'Message, repo#branch/file:L42, @shark, /bug, or /exit... (Ctrl+Shift+C)'
                       : 'Add/select a peer or click Nerve Shark to message'
                   }
                   className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-blue-500"

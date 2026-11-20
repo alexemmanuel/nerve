@@ -128,6 +128,8 @@ const ALL_NERVE_ECOSYSTEM_SCOPES: string[] = [
   'sovereignty.read',
   'sovereignty.write',
   'p2p.messaging',
+  'p2p.channel_control',
+  'p2p.message_search',
   'p2p.message_edit',
   'p2p.message_delete',
   'p2p.reactions',
@@ -171,6 +173,7 @@ const ALL_NERVE_ECOSYSTEM_SCOPES: string[] = [
   'ci.build_history',
   'copilot.collaborate',
   'shark.collaborate',
+  'shark.cancel',
   'incidents.dispatch',
   'incidents.ai_log_triage',
   'incidents.line_numbered_log_triage',
@@ -629,7 +632,7 @@ app.post('/api/v1/integration/verify-access', (req, res) => {
 app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
   res.json({
     protocol: 'nerve.engine.gateway.v1',
-    engineVersion: '1.6.0',
+    engineVersion: '1.6.2',
     corsEnabled: true,
     universalRepoChannels: ['github', 'gitlab', 'bitbucket', 'gitea', 'custom-git'],
     availableEngines: [
@@ -737,6 +740,16 @@ app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
         engine: 'p2p_message_lifecycle',
         endpoint: '/api/v1/p2p/message-lifecycle',
         description: 'E2EE Chat Message Edit (ENCRYPTED_CHAT_EDIT) and Delete for Me / Both (ENCRYPTED_CHAT_DELETE) synchronization',
+      },
+      {
+        engine: 'p2p_message_search',
+        endpoint: '/api/v1/p2p/messages/search',
+        description: 'In-chat message search across text, senders, deep-links, /bug tickets, code snippets, and Nerve Shark patches',
+      },
+      {
+        engine: 'p2p_channel_control',
+        endpoint: '/api/v1/p2p/channel-control',
+        description: 'Close/cancel active peer chat or Nerve Shark channels, abort in-flight AI runs, and evaluate typed exit syntax (/exit, :q, /cancel shark)',
       },
       {
         engine: 'users_by_email',
@@ -1020,6 +1033,224 @@ app.post('/api/v1/p2p/message-lifecycle', authenticateApiKey, (req, res) => {
   });
 });
 
+const MESSAGE_SEARCH_INDEXED_FIELDS = [
+  'text',
+  'senderName',
+  'senderHandle',
+  'timestamp',
+  'parsedLinks',
+  'incidentTicket',
+  'copilotPatch',
+  'sharedCodeSnippet',
+] as const;
+
+function executeChatMessageSearch(rawMessages: any[], rawQuery: string) {
+  const normalized = String(rawQuery || '').trim().toLowerCase();
+  const safeMessages = Array.isArray(rawMessages) ? rawMessages : [];
+  if (!normalized) {
+    return safeMessages.map((message) => ({ message, matchedFields: [] as string[] }));
+  }
+
+  const matches: Array<{ message: any; matchedFields: string[] }> = [];
+  for (const msg of safeMessages) {
+    if (!msg || typeof msg !== 'object') continue;
+    const matchedFields: string[] = [];
+    if (String(msg.text || '').toLowerCase().includes(normalized)) matchedFields.push('text');
+    if (String(msg.senderName || '').toLowerCase().includes(normalized)) matchedFields.push('senderName');
+    if (String(msg.senderHandle || '').toLowerCase().includes(normalized)) matchedFields.push('senderHandle');
+    if (String(msg.timestamp || '').toLowerCase().includes(normalized)) matchedFields.push('timestamp');
+    if (
+      Array.isArray(msg.parsedLinks) &&
+      msg.parsedLinks.some(
+        (l: any) =>
+          String(l?.repo || '').toLowerCase().includes(normalized) ||
+          String(l?.branch || '').toLowerCase().includes(normalized) ||
+          String(l?.filePath || '').toLowerCase().includes(normalized)
+      )
+    ) {
+      matchedFields.push('parsedLinks');
+    }
+    if (
+      msg.incidentTicket &&
+      (String(msg.incidentTicket.ticketId || '').toLowerCase().includes(normalized) ||
+        String(msg.incidentTicket.status || '').toLowerCase().includes(normalized))
+    ) {
+      matchedFields.push('incidentTicket');
+    }
+    if (
+      msg.copilotPatch &&
+      (String(msg.copilotPatch.suggestedPatch || '').toLowerCase().includes(normalized) ||
+        String(msg.copilotPatch.prTitle || '').toLowerCase().includes(normalized))
+    ) {
+      matchedFields.push('copilotPatch');
+    }
+    if (
+      msg.sharedCodeSnippet &&
+      (String(msg.sharedCodeSnippet.filePath || '').toLowerCase().includes(normalized) ||
+        (Array.isArray(msg.sharedCodeSnippet.lines) &&
+          msg.sharedCodeSnippet.lines.some((line: any) =>
+            String(line || '').toLowerCase().includes(normalized)
+          )))
+    ) {
+      matchedFields.push('sharedCodeSnippet');
+    }
+
+    if (matchedFields.length > 0) {
+      matches.push({ message: msg, matchedFields });
+    }
+  }
+  return matches;
+}
+
+app.post('/api/v1/p2p/messages/search', authenticateApiKey, (req, res) => {
+  const {
+    channelId = 'global-dev-room',
+    peerHandle = '',
+    query = '',
+    messages,
+  } = req.body || {};
+
+  const sampleMessages = [
+    {
+      id: 'msg_01',
+      senderHandle: peerHandle || 'developer-b',
+      senderName: peerHandle ? `@${peerHandle}` : 'Developer B',
+      senderRole: 'peer',
+      timestamp: '10:12 AM',
+      text: 'Checked owner/repository#main/src/index.ts:L42 — stream guard looks solid.',
+      parsedLinks: [
+        {
+          raw: 'owner/repository#main/src/index.ts:L42',
+          repo: 'owner/repository',
+          branch: 'main',
+          filePath: 'src/index.ts',
+          lineNumber: 42,
+        },
+      ],
+    },
+    {
+      id: 'msg_02',
+      senderHandle: 'nerve-shark',
+      senderName: 'Nerve Shark',
+      senderRole: 'copilot',
+      timestamp: '10:14 AM',
+      text: 'Proposed defensive stream patch and npm test verification.',
+      copilotPatch: {
+        summary: 'Guard writable stream before flush',
+        suggestedPatch: 'if (!stream.writable) return;',
+        recommendedTerminalCommand: 'npm test',
+        prTitle: 'fix(index.ts): guard stream write',
+      },
+    },
+  ];
+
+  const sourceMessages = Array.isArray(messages) ? messages : sampleMessages;
+  const cleanQuery = String(query || '').trim();
+  const matches = executeChatMessageSearch(sourceMessages, cleanQuery);
+
+  res.json({
+    protocol: 'nerve.p2p.message_search.v1',
+    status: 'OK',
+    scope: 'p2p.message_search',
+    channelId: String(peerHandle || channelId),
+    query: cleanQuery,
+    caseSensitive: false,
+    indexedFields: [...MESSAGE_SEARCH_INDEXED_FIELDS],
+    matchCount: matches.length,
+    totalCount: sourceMessages.length,
+    matches,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+const CHANNEL_EXIT_SYNTAX_REGEX =
+  /^(\/?(exit|close|quit|cancel|leave)|exit\(\)|:q!?)(\s+(chat|message|messages|shark|nerve\s*shark))?$/i;
+
+const SUPPORTED_EXIT_SYNTAX = [
+  '/exit',
+  'exit',
+  'exit()',
+  ':q',
+  ':q!',
+  '/close',
+  'close',
+  '/quit',
+  'quit',
+  '/leave',
+  'leave',
+  '/cancel',
+  'cancel',
+  '/exit chat',
+  '/exit shark',
+  '/cancel shark',
+] as const;
+
+function evaluateChannelControl(input: {
+  action?: string;
+  command?: string;
+  channelId?: string;
+  isSharkThinking?: boolean;
+}) {
+  const rawCommand = String(input.command || '').trim();
+  const channelId = String(input.channelId || 'nerve-shark').trim();
+  const isSharkChannel = channelId === 'nerve-shark';
+  const matchedExitSyntax = rawCommand ? CHANNEL_EXIT_SYNTAX_REGEX.test(rawCommand) : false;
+
+  let resolvedAction: 'close_channel' | 'cancel_shark' | 'open_shark_on_demand' | 'noop' = 'noop';
+  if (rawCommand && matchedExitSyntax) {
+    const cancelSharkOnly =
+      /^\/?cancel\s+(shark|nerve\s*shark)$/i.test(rawCommand) &&
+      Boolean(input.isSharkThinking) &&
+      !isSharkChannel;
+    resolvedAction = cancelSharkOnly ? 'cancel_shark' : 'close_channel';
+  } else if (input.action === 'cancel_shark') {
+    resolvedAction = 'cancel_shark';
+  } else if (input.action === 'open_shark') {
+    resolvedAction = 'open_shark_on_demand';
+  } else if (input.action === 'close' || input.action === 'close_channel') {
+    resolvedAction = 'close_channel';
+  }
+
+  return {
+    protocol: 'nerve.p2p.channel_control.v1',
+    status: resolvedAction === 'noop' ? 'IGNORED' : 'EXECUTED',
+    scope: resolvedAction === 'cancel_shark' ? 'shark.cancel' : 'p2p.channel_control',
+    channelId,
+    command: rawCommand || undefined,
+    matchedExitSyntax,
+    resolvedAction,
+    channelClosed: resolvedAction === 'close_channel',
+    sharkRequestAborted: resolvedAction === 'close_channel' || resolvedAction === 'cancel_shark',
+    autoPromptOnSharkOpen: false,
+    clearedState:
+      resolvedAction === 'close_channel'
+        ? ['selectedPeerHandle', 'composerText', 'chatMessageSearchQuery', 'editingMessageId', 'confirmDeleteMessageId']
+        : resolvedAction === 'cancel_shark'
+        ? ['isSharkThinking', 'sharkAbortController']
+        : [],
+    supportedExitSyntax: [...SUPPORTED_EXIT_SYNTAX],
+    timestamp: new Date().toISOString(),
+  };
+}
+
+app.post('/api/v1/p2p/channel-control', authenticateApiKey, (req, res) => {
+  const {
+    action = 'close',
+    command = '',
+    channelId = 'nerve-shark',
+    isSharkThinking = false,
+  } = req.body || {};
+
+  res.json(
+    evaluateChannelControl({
+      action: String(action || ''),
+      command: String(command || ''),
+      channelId: String(channelId || 'nerve-shark'),
+      isSharkThinking: Boolean(isSharkThinking),
+    })
+  );
+});
+
 app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
   const {
     engine = 'syntax',
@@ -1076,12 +1307,18 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
     case 'copilot':
     case 'nerve_shark':
     case 'shark':
-    case 'triage':
+    case 'triage': {
+      const rawGeminiKey = process.env.GEMINI_API_KEY || '';
+      const geminiConfigured = Boolean(rawGeminiKey && rawGeminiKey !== 'MY_GEMINI_API_KEY');
       result = {
         protocol: 'nerve.shark.v1',
         model: 'gemini-4-hydrogen',
         agent: 'Nerve Shark Shared Multi-Developer AI Agent',
         standaloneChannelSupported: true,
+        openMode: 'on-demand-prompt',
+        abortControllerSupported: true,
+        geminiKeyConfigured: geminiConfigured,
+        supportedGeminiKeyPrefixes: ['AQ.', 'AIza'],
         repo: payload.repo || 'owner/repository',
         rootCause: 'Unchecked writable stream state prior to chunk flush',
         suggestion:
@@ -1090,6 +1327,7 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
         confidence: 0.98,
       };
       break;
+    }
     case 'p2p_datachannel':
       result = {
         hook: 'useP2PDataChannel',
@@ -1204,6 +1442,42 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
         syncedToPeer: payload.action !== 'delete' || payload.scope !== 'me',
         encryption: 'AES-GCM-256',
       };
+      break;
+    case 'p2p_message_search': {
+      const searchQuery = String(payload.query || 'stream').trim();
+      const inputMessages = Array.isArray(payload.messages)
+        ? payload.messages
+        : [
+            {
+              id: 'msg_01',
+              senderHandle: 'developer-b',
+              senderName: 'Developer B',
+              senderRole: 'peer',
+              timestamp: '10:12 AM',
+              text: `Inspecting ${payload.repo || 'owner/repository'}#main/${payload.filePath || 'src/index.ts'}:L${payload.lineNumber || 42} stream handler.`,
+            },
+          ];
+      const matches = executeChatMessageSearch(inputMessages, searchQuery);
+      result = {
+        protocol: 'nerve.p2p.message_search.v1',
+        scope: 'p2p.message_search',
+        channelId: String(payload.peerHandle || payload.channelId || 'global-dev-room'),
+        query: searchQuery,
+        caseSensitive: false,
+        indexedFields: [...MESSAGE_SEARCH_INDEXED_FIELDS],
+        matchCount: matches.length,
+        totalCount: inputMessages.length,
+        matches,
+      };
+      break;
+    }
+    case 'p2p_channel_control':
+      result = evaluateChannelControl({
+        action: String(payload.action || 'close'),
+        command: String(payload.command || '/exit'),
+        channelId: String(payload.channelId || payload.peerHandle || 'nerve-shark'),
+        isSharkThinking: Boolean(payload.isSharkThinking),
+      });
       break;
     case 'users_by_email':
       result = {

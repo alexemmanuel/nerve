@@ -414,6 +414,43 @@ const LIVE_ENDPOINTS = [
       email: 'developer@github.com',
     },
   },
+  {
+    id: 'p2p_message_search',
+    label: '26. Chat Msg Search',
+    path: '/api/v1/p2p/messages/search',
+    defaultBody: {
+      channelId: 'developer-b',
+      query: 'stream',
+      messages: [
+        {
+          id: 'msg_01',
+          senderHandle: 'developer-b',
+          senderName: 'Developer B',
+          senderRole: 'peer',
+          timestamp: '10:12 AM',
+          text: 'Checked owner/repository#main/src/index.ts:L42 — stream guard looks solid.',
+        },
+        {
+          id: 'msg_02',
+          senderHandle: 'nerve-shark',
+          senderName: 'Nerve Shark',
+          senderRole: 'copilot',
+          timestamp: '10:14 AM',
+          text: 'Tests passed after patching stream flush.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'p2p_channel_control',
+    label: '27. Channel Close/Exit',
+    path: '/api/v1/p2p/channel-control',
+    defaultBody: {
+      channelId: 'nerve-shark',
+      command: '/exit',
+      isSharkThinking: true,
+    },
+  },
 ];
 
 // Safe ISO timestamp formatter preventing RangeError: Invalid time value crashes
@@ -792,7 +829,10 @@ export const Integration: React.FC<IntegrationProps> = ({
             branch: 'main',
             filePath: 'src/index.ts',
             lineNumber: 42,
-            command: 'npm test',
+            command: selectedEngineModule === 'p2p_channel_control' ? '/exit' : 'npm test',
+            query: 'stream',
+            channelId: 'nerve-shark',
+            isSharkThinking: true,
             prompt: 'Analyze failure stack trace and return non-blocking patch',
           },
         }),
@@ -2129,6 +2169,8 @@ const data = await response.json();`;
               'sovereignty.read',
               'sovereignty.write',
               'p2p.messaging',
+              'p2p.channel_control',
+              'p2p.message_search',
               'p2p.message_edit',
               'p2p.message_delete',
               'p2p.reactions',
@@ -2172,6 +2214,7 @@ const data = await response.json();`;
               'ci.build_history',
               'copilot.collaborate',
               'shark.collaborate',
+              'shark.cancel',
               'incidents.dispatch',
               'incidents.ai_log_triage',
               'incidents.line_numbered_log_triage',
@@ -2238,7 +2281,9 @@ const data = await response.json();`;
               onChange={(e) => setSelectedEngineModule(e.target.value)}
               className="px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 cursor-pointer"
             >
-              <option value="nerve_shark">Engine: nerve_shark (Nerve Shark gemini-4-hydrogen)</option>
+              <option value="nerve_shark">Engine: nerve_shark (Nerve Shark On-Demand gemini-4-hydrogen)</option>
+              <option value="p2p_channel_control">Engine: p2p_channel_control (Close Chat, Cancel Shark & /exit Syntax)</option>
+              <option value="p2p_message_search">Engine: p2p_message_search (In-Chat Message Search & Highlight)</option>
               <option value="p2p_message_lifecycle">Engine: p2p_message_lifecycle (E2EE Edit & Delete for Me/Both)</option>
               <option value="users_by_email">Engine: users_by_email (Email-Linked @users Lookup)</option>
               <option value="triage">Engine: triage (Automated CI Log Triage)</option>
