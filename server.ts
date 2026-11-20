@@ -1,7 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createHttpServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
@@ -10,16 +9,19 @@ import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
+const isVercelRuntime = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
 const app = express();
 const httpServer = createHttpServer(app);
-const io = new SocketIOServer(httpServer, {
-  path: '/socket.io',
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-  },
-  maxHttpBufferSize: 5e6,
-});
+const io = isVercelRuntime
+  ? null
+  : new SocketIOServer(httpServer, {
+      path: '/socket.io',
+      cors: {
+        origin: '*',
+        methods: ['GET', 'POST'],
+      },
+      maxHttpBufferSize: 5e6,
+    });
 const PORT = 3000;
 
 app.use(express.json({ limit: '5mb' }));
@@ -297,6 +299,68 @@ function getGenAIClient() {
 // ============================================================================
 // NERVE PROTOCOL REST API v1 — PUBLIC ENTERPRISE ENDPOINTS
 // ============================================================================
+
+app.get('/api/v1/health', async (req, res) => {
+  const rawKey = (process.env.GEMINI_API_KEY || '').trim();
+  const geminiKeyConfigured = Boolean(rawKey && rawKey !== 'MY_GEMINI_API_KEY');
+  const geminiKeyPrefix = geminiKeyConfigured
+    ? rawKey.startsWith('AQ.')
+      ? 'AQ.'
+      : rawKey.startsWith('AIza')
+      ? 'AIza'
+      : 'configured'
+    : 'missing';
+
+  let geminiLiveProbe:
+    | { active: boolean; model: string; latencyMs: number; status?: string; error?: string }
+    | undefined;
+
+  if (req.query.probe === 'gemini') {
+    const model = 'gemini-4-hydrogen';
+    const startedAt = Date.now();
+    if (!geminiKeyConfigured) {
+      geminiLiveProbe = {
+        active: false,
+        model,
+        latencyMs: 0,
+        error: 'GEMINI_API_KEY is not configured in the server environment.',
+      };
+    } else {
+      try {
+        const ai = new GoogleGenAI({ apiKey: rawKey });
+        const response = await ai.models.generateContent({
+          model,
+          contents: 'Reply with OK',
+        });
+        const text = (response.text || '').trim();
+        geminiLiveProbe = {
+          active: Boolean(text),
+          model,
+          latencyMs: Date.now() - startedAt,
+          status: text ? 'ACTIVE' : 'EMPTY_RESPONSE',
+        };
+      } catch (err: any) {
+        geminiLiveProbe = {
+          active: false,
+          model,
+          latencyMs: Date.now() - startedAt,
+          error: (err?.message || 'Gemini API call failed').slice(0, 220),
+        };
+      }
+    }
+  }
+
+  res.json({
+    ok: true,
+    protocol: 'nerve.health.v1',
+    engineVersion: '1.6.2',
+    runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
+    geminiKeyConfigured,
+    geminiKeyPrefix,
+    ...(geminiLiveProbe ? { geminiLiveProbe } : {}),
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // 0. API Key Management Endpoint (Issue Live Mode or Test Mode keys for third-party systems)
 app.post('/api/v1/keys/create', (req, res) => {
@@ -3423,83 +3487,85 @@ interface SignalingRoomPeer {
 const SIGNALING_ROOMS = new Map<string, Map<string, SignalingRoomPeer>>();
 let totalRelayedSignals = 0;
 
-io.on('connection', (socket) => {
-  let currentRoomId = '';
-  let currentPeerId = '';
+if (io) {
+  io.on('connection', (socket) => {
+    let currentRoomId = '';
+    let currentPeerId = '';
 
-  socket.on(
-    'room:join',
-    (payload: { roomId?: string; peerId?: string; handle?: string; displayName?: string }) => {
-      const roomId = String(payload?.roomId || 'global-dev-room').trim();
-      const peerId = String(payload?.peerId || socket.id).trim();
-      const handle = String(payload?.handle || 'developer').trim();
-      const displayName = String(payload?.displayName || handle).trim();
+    socket.on(
+      'room:join',
+      (payload: { roomId?: string; peerId?: string; handle?: string; displayName?: string }) => {
+        const roomId = String(payload?.roomId || 'global-dev-room').trim();
+        const peerId = String(payload?.peerId || socket.id).trim();
+        const handle = String(payload?.handle || 'developer').trim();
+        const displayName = String(payload?.displayName || handle).trim();
 
-      currentRoomId = roomId;
-      currentPeerId = peerId;
-      socket.join(roomId);
+        currentRoomId = roomId;
+        currentPeerId = peerId;
+        socket.join(roomId);
 
-      if (!SIGNALING_ROOMS.has(roomId)) {
-        SIGNALING_ROOMS.set(roomId, new Map());
+        if (!SIGNALING_ROOMS.has(roomId)) {
+          SIGNALING_ROOMS.set(roomId, new Map());
+        }
+        const roomMap = SIGNALING_ROOMS.get(roomId)!;
+        roomMap.set(peerId, {
+          socketId: socket.id,
+          peerId,
+          handle,
+          displayName,
+          roomId,
+          transport: 'socketio',
+          joinedAt: new Date().toLocaleTimeString(),
+        });
+
+        io.to(roomId).emit('room:peers', Array.from(roomMap.values()));
       }
-      const roomMap = SIGNALING_ROOMS.get(roomId)!;
-      roomMap.set(peerId, {
-        socketId: socket.id,
-        peerId,
-        handle,
-        displayName,
-        roomId,
-        transport: 'socketio',
-        joinedAt: new Date().toLocaleTimeString(),
-      });
+    );
 
-      io.to(roomId).emit('room:peers', Array.from(roomMap.values()));
-    }
-  );
-
-  socket.on('webrtc:offer', (payload: any) => {
-    totalRelayedSignals += 1;
-    const roomId = payload?.roomId || currentRoomId;
-    if (roomId) {
-      socket.to(roomId).emit('webrtc:offer', payload);
-    }
-  });
-
-  socket.on('webrtc:answer', (payload: any) => {
-    totalRelayedSignals += 1;
-    const roomId = payload?.roomId || currentRoomId;
-    if (roomId) {
-      socket.to(roomId).emit('webrtc:answer', payload);
-    }
-  });
-
-  socket.on('webrtc:ice-candidate', (payload: any) => {
-    totalRelayedSignals += 1;
-    const roomId = payload?.roomId || currentRoomId;
-    if (roomId) {
-      socket.to(roomId).emit('webrtc:ice-candidate', payload);
-    }
-  });
-
-  socket.on('p2p:encrypted-packet', (packet: any) => {
-    totalRelayedSignals += 1;
-    const roomId = packet?.roomId || currentRoomId;
-    if (roomId) {
-      socket.to(roomId).emit('p2p:encrypted-packet', packet);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    if (currentRoomId && SIGNALING_ROOMS.has(currentRoomId)) {
-      const roomMap = SIGNALING_ROOMS.get(currentRoomId)!;
-      roomMap.delete(currentPeerId);
-      io.to(currentRoomId).emit('room:peers', Array.from(roomMap.values()));
-      if (roomMap.size === 0) {
-        SIGNALING_ROOMS.delete(currentRoomId);
+    socket.on('webrtc:offer', (payload: any) => {
+      totalRelayedSignals += 1;
+      const roomId = payload?.roomId || currentRoomId;
+      if (roomId) {
+        socket.to(roomId).emit('webrtc:offer', payload);
       }
-    }
+    });
+
+    socket.on('webrtc:answer', (payload: any) => {
+      totalRelayedSignals += 1;
+      const roomId = payload?.roomId || currentRoomId;
+      if (roomId) {
+        socket.to(roomId).emit('webrtc:answer', payload);
+      }
+    });
+
+    socket.on('webrtc:ice-candidate', (payload: any) => {
+      totalRelayedSignals += 1;
+      const roomId = payload?.roomId || currentRoomId;
+      if (roomId) {
+        socket.to(roomId).emit('webrtc:ice-candidate', payload);
+      }
+    });
+
+    socket.on('p2p:encrypted-packet', (packet: any) => {
+      totalRelayedSignals += 1;
+      const roomId = packet?.roomId || currentRoomId;
+      if (roomId) {
+        socket.to(roomId).emit('p2p:encrypted-packet', packet);
+      }
+    });
+
+    socket.on('disconnect', () => {
+      if (currentRoomId && SIGNALING_ROOMS.has(currentRoomId)) {
+        const roomMap = SIGNALING_ROOMS.get(currentRoomId)!;
+        roomMap.delete(currentPeerId);
+        io.to(currentRoomId).emit('room:peers', Array.from(roomMap.values()));
+        if (roomMap.size === 0) {
+          SIGNALING_ROOMS.delete(currentRoomId);
+        }
+      }
+    });
   });
-});
+}
 
 app.all('/api/v1/p2p/signaling-status', authenticateApiKey, (req, res) => {
   const roomFilter = String(req.query.roomId || req.body?.roomId || 'global-dev-room').trim();
@@ -3621,6 +3687,8 @@ app.post('/api/v1/offline/flush', authenticateApiKey, (req, res) => {
 // ----------------------------------------------------------------------------
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    const vitePkg: string = 'vite';
+    const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -3642,6 +3710,6 @@ async function startServer() {
 export { app, httpServer };
 export default app;
 
-if (!process.env.VERCEL && !process.env.VERCEL_ENV) {
+if (!isVercelRuntime) {
   startServer();
 }
