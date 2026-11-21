@@ -66,29 +66,29 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
   onGitHubOAuthConfirm,
 }) => {
   return (
-    <div className="relative flex-1 min-h-[calc(100vh-110px)] w-full overflow-hidden bg-white dark:bg-black">
+    <div className="relative flex-1 min-h-[calc(100vh-110px)] w-full overflow-hidden bg-white dark:bg-[#0d1117]">
       {/* Redacted Background Shell: zero text or sensitive data in DOM while locked */}
       <div
         aria-hidden="true"
         className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6 opacity-25 pointer-events-none select-none"
       >
-        <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-4">
+        <div className="flex items-center justify-between border-b border-[#d0d7de] dark:border-[#30363d] pb-4">
           <div className="space-y-1">
-            <div className="h-5 w-64 rounded bg-neutral-200 dark:bg-neutral-800" />
-            <div className="h-3 w-40 rounded bg-neutral-200 dark:bg-neutral-800" />
+            <div className="h-5 w-64 rounded bg-[#d0d7de] dark:bg-[#30363d]" />
+            <div className="h-3 w-40 rounded bg-[#d0d7de] dark:bg-[#30363d]" />
           </div>
-          <div className="h-8 w-32 rounded-lg bg-neutral-200 dark:bg-neutral-800" />
+          <div className="h-8 w-32 rounded-md bg-[#d0d7de] dark:bg-[#30363d]" />
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {[Key, Terminal, ShieldAlert].map((Icon, idx) => (
             <div
               key={idx}
-              className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 space-y-3"
+              className="p-5 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-3"
             >
-              <Icon className="w-4 h-4 text-neutral-400 dark:text-neutral-600" />
-              <div className="h-4 w-3/4 rounded bg-neutral-200 dark:bg-neutral-800" />
-              <div className="h-3 w-1/2 rounded bg-neutral-200 dark:bg-neutral-800" />
+              <Icon className="w-4 h-4 text-[#656d76] dark:text-[#8b949e]" />
+              <div className="h-4 w-3/4 rounded bg-[#d0d7de] dark:bg-[#30363d]" />
+              <div className="h-3 w-1/2 rounded bg-[#d0d7de] dark:bg-[#30363d]" />
             </div>
           ))}
         </div>
@@ -99,12 +99,12 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
         role="dialog"
         aria-modal="true"
         aria-labelledby="integration-unlock-title"
-        className="absolute inset-0 z-20 bg-black/65 flex items-center justify-center p-4"
+        className="absolute inset-0 z-20 bg-black/55 flex items-center justify-center p-4"
       >
-        <div className="w-full max-w-lg rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white shadow-2xl p-5 sm:p-6 space-y-5">
+        <div className="w-full max-w-lg rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] shadow-2xl p-5 sm:p-6 space-y-5">
           {requiresReverification && !isUnlockPromptConfirmed ? (
             <>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-200 dark:border-neutral-800 pb-4">
+              <div className="flex items-start justify-between gap-3 border-b border-[#d0d7de] dark:border-[#30363d] pb-4">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2 text-xs font-mono text-amber-600 dark:text-amber-400">
                     <Lock className="w-3.5 h-3.5 shrink-0" />
@@ -112,7 +112,7 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                   </div>
                   <h1
                     id="integration-unlock-title"
-                    className="text-lg sm:text-xl font-bold tracking-tight text-black dark:text-white text-balance"
+                    className="text-lg sm:text-xl font-bold tracking-tight text-[#1f2328] dark:text-[#e6edf3] text-balance"
                   >
                     Integration Session Locked
                   </h1>
@@ -124,7 +124,7 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                 <button
                   type="button"
                   onClick={onStartUnlock}
-                  className="flex-1 min-h-[44px] py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+                  className="flex-1 min-h-[44px] py-2.5 px-4 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0"
                 >
                   <Unlock className="w-4 h-4" />
                   <span>Unlock Session</span>
@@ -133,23 +133,23 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                   <button
                     type="button"
                     onClick={onBackToWorkspace}
-                    className="min-h-[44px] py-2.5 px-4 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black dark:text-white text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0"
+                    className="min-h-[44px] py-2.5 px-4 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] text-[#1f2328] dark:text-[#e6edf3] text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0"
                   >
                     <ArrowLeft className="w-3.5 h-3.5" />
-                    <span>Return to Workspace</span>
+                    <span>Back to Workspace</span>
                   </button>
                 )}
               </div>
             </>
           ) : (
             <>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-200 dark:border-neutral-800 pb-4">
+              <div className="flex items-start justify-between gap-3 border-b border-[#d0d7de] dark:border-[#30363d] pb-4">
                 <div className="space-y-1">
                   {requiresReverification && (
                     <button
                       type="button"
                       onClick={onResetUnlockPrompt}
-                      className="inline-flex items-center gap-1 text-[11px] font-medium text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer mb-1"
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer mb-1"
                     >
                       <ArrowLeft className="w-3 h-3" />
                       <span>Back</span>
@@ -157,16 +157,16 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                   )}
                   <h1
                     id="integration-unlock-title"
-                    className="text-base sm:text-lg font-bold text-black dark:text-white text-balance"
+                    className="text-base sm:text-lg font-bold text-[#1f2328] dark:text-[#e6edf3] text-balance"
                   >
                     {requiresReverification
-                      ? 'Re-verify Identity to Unlock Integration'
+                      ? 'Verify Identity to Unlock Integration'
                       : 'Sign in to Integration'}
                   </h1>
-                  <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                  <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
                     {requiresReverification
-                      ? 'Confirm your User Email, Third-Party App Email, or OAuth identity to unlock the Integration console.'
-                      : 'Sign in with your User Email, Third-Party App Email, or OAuth account to access Integration.'}
+                      ? 'Confirm your email or OAuth identity to manage API keys, SSH keys, and webhooks.'
+                      : 'Sign in with your email or OAuth account to access Integration settings.'}
                   </p>
                 </div>
                 <Lock className="w-5 h-5 text-amber-500 shrink-0 mt-1" />
@@ -176,10 +176,10 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                 <button
                   type="button"
                   onClick={() => onChangeProviderType('user')}
-                  className={`py-2 px-3 rounded-xl text-xs font-semibold border flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                  className={`py-2 px-3 rounded-md text-xs font-semibold border flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
                     providerType === 'user'
                       ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-neutral-50 dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800'
+                      : 'bg-[#f6f8fa] dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] border-[#d0d7de] dark:border-[#30363d]'
                   }`}
                 >
                   <Mail className="w-3.5 h-3.5" />
@@ -188,24 +188,24 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                 <button
                   type="button"
                   onClick={() => onChangeProviderType('third-party')}
-                  className={`py-2 px-3 rounded-xl text-xs font-semibold border flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                  className={`py-2 px-3 rounded-md text-xs font-semibold border flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
                     providerType === 'third-party'
                       ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-neutral-50 dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800'
+                      : 'bg-[#f6f8fa] dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] border-[#d0d7de] dark:border-[#30363d]'
                   }`}
                 >
                   <Globe className="w-3.5 h-3.5" />
-                  <span>Third-Party App Email</span>
+                  <span>App Email</span>
                 </button>
               </div>
 
               {gateStep === 'email' ? (
                 <form onSubmit={onRequestEmailAccess} className="space-y-3 text-xs">
                   <div className="space-y-1">
-                    <label className="font-semibold text-black dark:text-white block">
+                    <label className="font-semibold text-[#1f2328] dark:text-[#e6edf3] block">
                       {providerType === 'user'
                         ? 'Workspace User Email'
-                        : 'Third-Party Service / Developer Email'}
+                        : 'Third-Party Service Email'}
                     </label>
                     <input
                       type="email"
@@ -213,12 +213,12 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                       value={gateEmailInput}
                       onChange={(e) => onChangeGateEmailInput(e.target.value)}
                       placeholder="nervep2p@gmail.com"
-                      className="w-full px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 text-black dark:text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
 
                   {gateError && (
-                    <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs">
+                    <div className="p-2.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs">
                       {gateError}
                     </div>
                   )}
@@ -226,23 +226,23 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                   <button
                     type="submit"
                     disabled={isVerifyingGate}
-                    className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer transition-colors"
+                    className="w-full py-2.5 px-4 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer transition-colors"
                   >
-                    {isVerifyingGate ? 'Preparing Email Dispatch...' : 'Send Verification Code to Email'}
+                    {isVerifyingGate ? 'Preparing Email Dispatch...' : 'Send Verification Code'}
                   </button>
 
-                  <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
-                    <div className="text-[11px] text-center text-neutral-500 dark:text-neutral-400">
+                  <div className="pt-2 border-t border-[#d0d7de] dark:border-[#30363d] space-y-2">
+                    <div className="text-[11px] text-center text-[#656d76] dark:text-[#8b949e]">
                       {requiresReverification
-                        ? 'Or re-authenticate via OAuth to unlock Integration:'
-                        : 'Or sign in with OAuth:'}
+                        ? 'Or re-authenticate with OAuth'
+                        : 'Or sign in with OAuth'}
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <button
                         type="button"
                         disabled={isVerifyingGate}
                         onClick={onGoogleOAuthConfirm}
-                        className="py-2 px-3 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-black hover:bg-neutral-50 dark:hover:bg-neutral-900 text-black dark:text-white font-semibold flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+                        className="py-2 px-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] hover:bg-[#f6f8fa] dark:hover:bg-[#30363d] text-[#1f2328] dark:text-[#e6edf3] font-semibold flex items-center justify-center gap-2 cursor-pointer"
                       >
                         <svg
                           version="1.1"
@@ -267,29 +267,29 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                             d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
                           />
                         </svg>
-                        <span>Sign in with Google</span>
+                        <span>Continue with Google</span>
                       </button>
                       <button
                         type="button"
                         disabled={isVerifyingGate}
                         onClick={onGitHubOAuthConfirm}
-                        className="py-2 px-3 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black dark:text-white font-semibold cursor-pointer"
+                        className="py-2 px-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] text-[#1f2328] dark:text-[#e6edf3] font-semibold cursor-pointer"
                       >
-                        Confirm with GitHub
+                        Continue with GitHub
                       </button>
                     </div>
                   </div>
                 </form>
               ) : (
                 <form onSubmit={onVerifyCodeAccess} className="space-y-3 text-xs">
-                  <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-mono text-[11px]">
+                  <div className="p-3 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-mono text-[11px]">
                     {gateDispatchMessage ||
-                      `A 6-digit verification code has been sent to ${gateEmailInput}. Check your email inbox and enter the code below.`}
+                      `A 6-digit verification code has been sent to ${gateEmailInput}. Check your inbox and enter the code below.`}
                   </div>
 
                   <div className="space-y-1">
-                    <label className="font-semibold text-black dark:text-white block">
-                      Enter 6-Digit Code Sent to {gateEmailInput}
+                    <label className="font-semibold text-[#1f2328] dark:text-[#e6edf3] block">
+                      6-Digit Verification Code
                     </label>
                     <input
                       type="text"
@@ -297,13 +297,13 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                       maxLength={6}
                       value={gateCodeInput}
                       onChange={(e) => onChangeGateCodeInput(e.target.value)}
-                      placeholder="Enter 6-digit code from your email"
-                      className="w-full px-3 py-2 text-center tracking-widest font-mono font-bold text-sm rounded-xl border border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950 text-black dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Enter 6-digit code"
+                      className="w-full px-3 py-2 text-center tracking-widest font-mono font-bold text-sm rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
 
                   {gateError && (
-                    <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs">
+                    <div className="p-2.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs">
                       {gateError}
                     </div>
                   )}
@@ -312,7 +312,7 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                     <button
                       type="button"
                       onClick={() => onChangeGateStep('email')}
-                      className="px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 font-medium cursor-pointer"
+                      className="px-3 py-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] font-medium cursor-pointer"
                     >
                       Change Email
                     </button>
@@ -320,16 +320,16 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                       type="button"
                       disabled={isVerifyingGate}
                       onClick={onOpenGmailSendConfirmModal}
-                      className="px-3 py-2 rounded-xl border border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold cursor-pointer"
+                      className="px-3 py-2 rounded-md border border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold cursor-pointer"
                     >
                       Resend Code
                     </button>
                     <button
                       type="submit"
                       disabled={isVerifyingGate}
-                      className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer transition-colors"
+                      className="flex-1 py-2 px-4 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer transition-colors"
                     >
-                      {isVerifyingGate ? 'Verifying...' : 'Verify Code & Unlock'}
+                      {isVerifyingGate ? 'Verifying...' : 'Verify & Unlock'}
                     </button>
                   </div>
                 </form>
@@ -342,24 +342,24 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
       {/* Mandatory User Confirmation Dialog before sending email via Gmail API */}
       {showGmailSendConfirmModal && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3">
-          <div className="w-full max-w-md rounded-xl border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white p-4 space-y-3.5 shadow-2xl text-xs">
-            <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-2.5">
+          <div className="w-full max-w-md rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] p-4 space-y-3.5 shadow-2xl text-xs">
+            <div className="flex items-center justify-between border-b border-[#d0d7de] dark:border-[#30363d] pb-2.5">
               <div className="flex items-center gap-2">
                 <Mail className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                <h3 className="text-sm font-bold">Confirm Sending Verification Email</h3>
+                <h3 className="text-sm font-bold">Confirm Verification Email</h3>
               </div>
               <button
                 type="button"
                 onClick={onCloseGmailSendConfirmModal}
-                className="p-1 rounded-lg text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                className="p-1 rounded-md text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-neutral-600 dark:text-neutral-300 leading-relaxed">
-              Send a 6-digit Integration verification code email to{' '}
-              <strong className="font-mono text-black dark:text-white">{gateEmailInput}</strong> via
+            <p className="text-[#656d76] dark:text-[#8b949e] leading-relaxed">
+              Send a 6-digit verification code to{' '}
+              <strong className="font-mono text-[#1f2328] dark:text-[#e6edf3]">{gateEmailInput}</strong> via
               your connected Gmail account?
             </p>
 
@@ -367,7 +367,7 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
               <button
                 type="button"
                 onClick={onCloseGmailSendConfirmModal}
-                className="px-3 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 font-medium cursor-pointer"
+                className="px-3 py-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] font-medium cursor-pointer"
               >
                 Cancel
               </button>
@@ -375,9 +375,9 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                 type="button"
                 disabled={isVerifyingGate}
                 onClick={onConfirmSendGmailCode}
-                className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer"
+                className="px-3.5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer"
               >
-                {isVerifyingGate ? 'Sending...' : 'Confirm & Send Email'}
+                {isVerifyingGate ? 'Sending...' : 'Send Email'}
               </button>
             </div>
           </div>

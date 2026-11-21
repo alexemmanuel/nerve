@@ -75,6 +75,8 @@ export interface ChatMessage {
     lineNumber: number;
   }>;
   incidentTicket?: IncidentTicket;
+  sharkMode?: 'chat' | 'code';
+  suggestedFollowUps?: string[];
   copilotPatch?: {
     summary: string;
     suggestedPatch: string;
@@ -514,27 +516,39 @@ export async function authenticateWithGoogle() {
   },
   {
     id: 'nerve-shark-sdk',
-    platformName: 'Nerve Shark AI SDK',
-    category: 'On-Demand AI Collaboration & Cancellation',
-    targetUseCase: 'Opens Nerve Shark on-demand (no auto-prompt), invokes gemini-4-hydrogen (AQ. / AIza GEMINI_API_KEY), and supports AbortController cancellation',
-    protocolEndpoint: 'POST /api/v1/copilot/collaborate · scopes: shark.collaborate, shark.cancel',
+    platformName: 'Nerve Shark AI Chatbox SDK',
+    category: 'Dual-Mode Chatbox & Code Assistant',
+    targetUseCase: 'Powers both conversational Nerve app onboarding/help (mode: "chat") and code debugging/patching (mode: "code") with multi-turn memory and AbortController cancellation',
+    protocolEndpoint: 'POST /api/v1/copilot/collaborate · scopes: shark.collaborate, shark.chatbox_guide, shark.multi_turn, shark.cancel',
     language: 'TypeScript',
-    architectureNotes: 'Waits for explicit user prompt, supports modern AQ. Gemini API keys server-side, and aborts cleanly via AbortController.',
-    codeSnippet: `export async function invokeNerveShark(
+    architectureNotes: 'Automatically switches between friendly chatbox replies and structured code patches based on user intent, supporting workspace and integration surfaces.',
+    codeSnippet: `export async function chatWithNerveShark(
   apiKey: string,
   prompt: string,
-  repo: string,
-  filePath: string,
-  signal?: AbortSignal
+  options?: {
+    surface?: "workspace" | "integration";
+    mode?: "auto" | "chat" | "code";
+    repo?: string;
+    filePath?: string;
+    history?: Array<{ role: "user" | "assistant"; text: string }>;
+    signal?: AbortSignal;
+  }
 ) {
-  if (!prompt.trim()) throw new Error("Explicit prompt required");
+  if (!prompt.trim()) throw new Error("Prompt is required");
   const res = await fetch("https://your-domain.com/api/v1/copilot/collaborate", {
     method: "POST",
-    signal,
+    signal: options?.signal,
     headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${apiKey}\` },
-    body: JSON.stringify({ prompt, repo, branch: "main", filePath }),
+    body: JSON.stringify({
+      prompt,
+      surface: options?.surface || "workspace",
+      mode: options?.mode || "auto",
+      repo: options?.repo || "",
+      filePath: options?.filePath || "",
+      history: options?.history || [],
+    }),
   });
-  return await res.json(); // protocol: "nerve.shark.v1", model: "gemini-4-hydrogen"
+  return await res.json(); // { mode: "chat" | "code", summary, suggestedPatch, suggestedFollowUps }
 }`,
   },
   {

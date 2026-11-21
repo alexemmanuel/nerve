@@ -24,6 +24,11 @@ import {
   Mail,
   Globe,
   ShieldCheck,
+  Sparkles,
+  Send,
+  Search,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { ENGINE_SDK_SPECS, RepositoryContext } from '../data/mockWorkspaceData';
 import { IncidentWorkflowReport } from '../data/incidentReports';
@@ -579,6 +584,30 @@ export const Integration: React.FC<IntegrationProps> = ({
     getCachedGmailAccessToken()
   );
 
+  // GitHub Settings-style Navigation Tabs & Collapsible Scopes State
+  const [activeIntegrationTab, setActiveIntegrationTab] = useState<
+    'overview' | 'keys' | 'ssh' | 'api' | 'shark'
+  >('overview');
+  const [showAllScopes, setShowAllScopes] = useState<boolean>(false);
+  const [scopeSearchQuery, setScopeSearchQuery] = useState<string>('');
+
+  // Embedded Nerve Shark Integration Chatbox State
+  interface IntegrationSharkMessage {
+    id: string;
+    role: 'user' | 'assistant';
+    text: string;
+    timestamp: string;
+    suggestedPatch?: string;
+    suggestedFollowUps?: string[];
+  }
+  const [integrationSharkMessages, setIntegrationSharkMessages] = useState<
+    IntegrationSharkMessage[]
+  >([]);
+  const [integrationSharkInput, setIntegrationSharkInput] = useState<string>('');
+  const [isIntegrationSharkThinking, setIsIntegrationSharkThinking] = useState<boolean>(false);
+  const integrationSharkAbortRef = useRef<AbortController | null>(null);
+  const integrationSharkReqIdRef = useRef<number>(0);
+
   // Third-Party Engine Callout Gateway State
   const [selectedEngineModule, setSelectedEngineModule] = useState<string>('nerve_shark');
   const [engineCalloutOutput, setEngineCalloutOutput] = useState<string>('');
@@ -601,7 +630,7 @@ export const Integration: React.FC<IntegrationProps> = ({
       error?: string;
     };
   }>({
-    engineVersion: '1.6.3',
+    engineVersion: '1.7.0',
     contactEmail: NERVE_PROFILE_EMAIL,
     runtime: 'vercel-serverless',
     geminiModel: 'gemini-4-hydrogen',
@@ -622,7 +651,7 @@ export const Integration: React.FC<IntegrationProps> = ({
       if (res.ok) {
         const data = await res.json();
         setProfileHealth({
-          engineVersion: data.engineVersion || '1.6.3',
+          engineVersion: data.engineVersion || '1.7.0',
           contactEmail: data.contactEmail || NERVE_PROFILE_EMAIL,
           runtime: data.runtime || 'vercel-serverless',
           geminiModel: data.geminiModel || 'gemini-4-hydrogen',
@@ -635,6 +664,129 @@ export const Integration: React.FC<IntegrationProps> = ({
       // Keep last known profile defaults if offline
     } finally {
       if (runLiveGeminiProbe) setIsProbingGemini(false);
+    }
+  };
+
+  const handleCancelIntegrationShark = () => {
+    integrationSharkReqIdRef.current += 1;
+    if (integrationSharkAbortRef.current) {
+      integrationSharkAbortRef.current.abort();
+      integrationSharkAbortRef.current = null;
+    }
+    setIsIntegrationSharkThinking(false);
+  };
+
+  const handleSendIntegrationShark = async (
+    e?: React.FormEvent,
+    explicitPrompt?: string
+  ) => {
+    if (e) e.preventDefault();
+    const promptText = (explicitPrompt ?? integrationSharkInput).trim();
+    if (!promptText) return;
+
+    if (explicitPrompt === undefined) {
+      setIntegrationSharkInput('');
+    }
+
+    if (['/exit', '/clear', '/close'].includes(promptText.toLowerCase())) {
+      handleCancelIntegrationShark();
+      setIntegrationSharkMessages([]);
+      return;
+    }
+
+    const userMsg: IntegrationSharkMessage = {
+      id: `ishark-u-${Date.now()}`,
+      role: 'user',
+      text: promptText,
+      timestamp: new Date().toLocaleTimeString(),
+    };
+
+    const nextHistory = [...integrationSharkMessages, userMsg]
+      .slice(-10)
+      .map((m) => ({ role: m.role, text: m.text }));
+
+    setIntegrationSharkMessages((prev) => [...prev, userMsg]);
+
+    integrationSharkReqIdRef.current += 1;
+    const reqId = integrationSharkReqIdRef.current;
+    if (integrationSharkAbortRef.current) {
+      integrationSharkAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    integrationSharkAbortRef.current = controller;
+    setIsIntegrationSharkThinking(true);
+
+    try {
+      let data: any = null;
+      try {
+        const res = await fetch('/api/v1/copilot/collaborate', {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${activeKey}`,
+            'X-Integrator-Email': integrationVerifiedEmail || NERVE_PROFILE_EMAIL,
+          },
+          body: JSON.stringify({
+            prompt: promptText,
+            mode: 'auto',
+            surface: 'integration',
+            history: nextHistory,
+            repo: Object.keys(repositories)[0] || 'owner/repository',
+            branch: 'main',
+            filePath: 'integration/api-config.ts',
+          }),
+        });
+        if (res.ok) {
+          const parsed = await res.json().catch(() => null);
+          if (parsed && typeof parsed.summary === 'string' && parsed.summary.trim()) {
+            data = parsed;
+          }
+        }
+      } catch (err: any) {
+        if (controller.signal.aborted || err?.name === 'AbortError' || reqId !== integrationSharkReqIdRef.current) {
+          return;
+        }
+      }
+
+      if (controller.signal.aborted || reqId !== integrationSharkReqIdRef.current) {
+        return;
+      }
+
+      const replyText =
+        data?.summary ||
+        `Here is how Nerve Integration works (v${profileHealth.engineVersion}, ${NERVE_PROFILE_EMAIL}):\n\n• API Keys tab: Switch between Live (nrve_live_) and Test (nrve_test_) keys, copy once before sealing, or roll a fresh secret.\n• SSH Keys tab: Generate ed25519/RSA deploy keys or connect GitHub account SSH keys via /user/keys.\n• API & SDKs tab: Call any Nerve engine module via POST /api/v1/engine/call with Authorization: Bearer <key>, or test endpoints live.\n• Overview tab: Click Verify Live Gemini to confirm your server-side Gemini API key and Vercel serverless runtime.`;
+
+      const cleanedPatch =
+        data?.mode === 'code' && typeof data?.suggestedPatch === 'string'
+          ? data.suggestedPatch.trim()
+          : '';
+
+      const followUps = Array.isArray(data?.suggestedFollowUps)
+        ? data.suggestedFollowUps
+            .filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0)
+            .slice(0, 3)
+        : [
+            'How do I connect my app with a Live API key?',
+            'How do I set up SSH keys for GitHub or GitLab?',
+            'Show me a webhook payload for GitHub issues',
+          ];
+
+      const assistantMsg: IntegrationSharkMessage = {
+        id: `ishark-a-${Date.now()}`,
+        role: 'assistant',
+        text: replyText,
+        timestamp: new Date().toLocaleTimeString(),
+        suggestedPatch: cleanedPatch || undefined,
+        suggestedFollowUps: followUps,
+      };
+
+      setIntegrationSharkMessages((prev) => [...prev, assistantMsg]);
+    } finally {
+      if (reqId === integrationSharkReqIdRef.current) {
+        integrationSharkAbortRef.current = null;
+        setIsIntegrationSharkThinking(false);
+      }
     }
   };
 
@@ -1560,7 +1712,7 @@ export const Integration: React.FC<IntegrationProps> = ({
       .style('cursor', 'pointer')
       .on('mouseenter', (_event, d) => setHoveredPoint(d))
       .on('click', (_event, d) => setHoveredPoint(d));
-  }, [metrics30d, isDark]);
+  }, [metrics30d, isDark, activeIntegrationTab]);
 
   const handleSetRepoCiBuildStatus = async (repoName: string, nextStatus: CiBuildState) => {
     try {
@@ -1751,8 +1903,8 @@ export const Integration: React.FC<IntegrationProps> = ({
 
   const getStatusDotClasses = (status: CiBuildState) => {
     if (status === 'Passing') return 'bg-emerald-500';
-    if (status === 'Failing') return 'bg-red-500 animate-pulse';
-    if (status === 'Running') return 'bg-blue-500 animate-pulse';
+    if (status === 'Failing') return 'bg-red-500';
+    if (status === 'Running') return 'bg-blue-500';
     return 'bg-amber-500';
   };
 
@@ -1813,838 +1965,1093 @@ const data = await response.json();`;
     );
   }
 
+  const ALL_INTEGRATION_SCOPES = [
+    'trust.verify',
+    'sovereignty.read',
+    'sovereignty.write',
+    'p2p.messaging',
+    'p2p.channel_control',
+    'p2p.message_search',
+    'p2p.message_edit',
+    'p2p.message_delete',
+    'p2p.reactions',
+    'p2p.webrtc_signaling',
+    'p2p.broadcast_fallback',
+    'p2p.e2ee_aes_gcm_256',
+    'p2p.pbkdf2_100k',
+    'p2p.chunked_file_stream',
+    'p2p.datachannel_16kb_backpressure',
+    'p2p.terminal_log_stream',
+    'p2p.json_inspector',
+    'p2p.quick_reply',
+    'p2p.share_snippet',
+    'p2p.repo_autodeploy',
+    'peers.search_and_delete',
+    'users.email_lookup',
+    'pull_request.diff_review',
+    'syntax.parse',
+    'syntax.highlighter',
+    'ansi.color_schemes',
+    'explorer.tree',
+    'codespaces.exec',
+    'codespaces.multi_terminal',
+    'codespaces.split_terminal',
+    'codespaces.macros',
+    'codespaces.log_filter',
+    'codespaces.log_download_txt',
+    'codespaces.history',
+    'codespaces.autoscroll',
+    'codespaces.build_summary',
+    'codespaces.cmd_suggestions',
+    'codespaces.line_numbers',
+    'codespaces.terminal_theme',
+    'codespaces.resource_telemetry',
+    'ssh.keys',
+    'ssh.generate',
+    'ssh.universal_remotes',
+    'ci.telemetry',
+    'ci.d3_30d_trends',
+    'ci.mttr',
+    'ci.build_history',
+    'copilot.collaborate',
+    'shark.collaborate',
+    'shark.chatbox_guide',
+    'shark.multi_turn',
+    'shark.cancel',
+    'incidents.dispatch',
+    'incidents.ai_log_triage',
+    'incidents.line_numbered_log_triage',
+    'incidents.d3_pipeline',
+    'webhooks.listen',
+    'engine.third_party_callout',
+    'integration.gmail_gate_autolock',
+    'firebase.firestore_sync',
+    'firebase.security_rules',
+    'offline.queue_sync',
+    'offline.queue_auto_flush',
+    'auth.multi_provider',
+    'auth.github_provider_oauth',
+    'auth.google_provider_oauth',
+    'auth.google_oauth',
+    'github.ssh_keys_manage',
+    'health.gemini_probe',
+    'runtime.vercel_serverless',
+  ];
+
+  const filteredScopes = scopeSearchQuery.trim()
+    ? ALL_INTEGRATION_SCOPES.filter((s) =>
+        s.toLowerCase().includes(scopeSearchQuery.trim().toLowerCase())
+      )
+    : ALL_INTEGRATION_SCOPES;
+
+  const INTEGRATION_TABS: Array<{
+    id: 'overview' | 'keys' | 'ssh' | 'api' | 'shark';
+    label: string;
+    icon: React.ReactNode;
+  }> = [
+    { id: 'overview', label: 'Overview', icon: <Activity className="w-3.5 h-3.5" /> },
+    { id: 'keys', label: 'API Keys', icon: <Key className="w-3.5 h-3.5" /> },
+    { id: 'ssh', label: 'SSH Keys', icon: <Shield className="w-3.5 h-3.5" /> },
+    { id: 'api', label: 'API & SDKs', icon: <Code2 className="w-3.5 h-3.5" /> },
+    { id: 'shark', label: 'Ask Nerve Shark', icon: <Sparkles className="w-3.5 h-3.5" /> },
+  ];
+
   return (
-    <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 py-4 space-y-4">
-      {/* Compact Header, Verified Email Session Badge & Webhook Dispatchers */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-base sm:text-lg font-bold text-slate-900 dark:text-slate-100">
-            Integration & CI/CD Telemetry
+    <div className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 py-5 space-y-5">
+      {/* GitHub Settings-Style Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="space-y-0.5">
+          <h1 className="text-lg sm:text-xl font-bold text-[#1f2328] dark:text-[#e6edf3]">
+            Integration Settings
           </h1>
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-mono bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Confirmed: {integrationVerifiedEmail}</span>
-          </span>
-          {onOpenConnectedUsers && (
-            <button
-              type="button"
-              onClick={() => onOpenConnectedUsers(integrationVerifiedEmail)}
-              className="px-2 py-0.5 text-[11px] font-mono text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
-              title={`View @users connected to ${integrationVerifiedEmail}`}
-            >
-              @users
-            </button>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[#656d76] dark:text-[#8b949e]">
+            <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-medium">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>{integrationVerifiedEmail}</span>
+            </span>
+            <span>·</span>
+            <span className="font-mono">v{profileHealth.engineVersion}</span>
+            {onOpenConnectedUsers && (
+              <>
+                <span>·</span>
+                <button
+                  type="button"
+                  onClick={() => onOpenConnectedUsers(integrationVerifiedEmail)}
+                  className="font-mono text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                  title={`View @users connected to ${integrationVerifiedEmail}`}
+                >
+                  @users
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {onTriggerWebhook && (
+            <>
+              <button
+                onClick={async () => {
+                  await onTriggerWebhook('issues');
+                  fetchCiStatusFeed();
+                }}
+                className="px-2.5 py-1.5 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] border border-[#d0d7de] dark:border-[#30363d] rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Webhook className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                <span>Test Issue Webhook</span>
+              </button>
+              <button
+                onClick={async () => {
+                  await onTriggerWebhook('pull_request');
+                  fetchCiStatusFeed();
+                }}
+                className="px-2.5 py-1.5 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] border border-[#d0d7de] dark:border-[#30363d] rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Webhook className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>Test PR Webhook</span>
+              </button>
+            </>
           )}
           <button
             type="button"
             onClick={handleExplicitSignOut}
-            className="px-2.5 py-0.5 rounded text-[11px] font-medium text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 border border-slate-200 dark:border-slate-800 cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
+            className="px-2.5 py-1.5 rounded-md text-xs font-medium text-[#656d76] dark:text-[#8b949e] hover:text-red-600 dark:hover:text-red-400 border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] cursor-pointer flex items-center gap-1.5 whitespace-nowrap"
             title="Sign out of Integration Console"
           >
-            <LogOut className="w-3 h-3" />
+            <LogOut className="w-3.5 h-3.5" />
             <span>Sign Out</span>
           </button>
         </div>
-
-        {onTriggerWebhook && (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              onClick={async () => {
-                await onTriggerWebhook('issues');
-                fetchCiStatusFeed();
-              }}
-              className="px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800/60 rounded-lg flex items-center gap-1 cursor-pointer"
-            >
-              <Webhook className="w-3 h-3" />
-              <span>Issue Webhook</span>
-            </button>
-            <button
-              onClick={async () => {
-                await onTriggerWebhook('pull_request');
-                fetchCiStatusFeed();
-              }}
-              className="px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/60 rounded-lg flex items-center gap-1 cursor-pointer"
-            >
-              <Webhook className="w-3 h-3" />
-              <span>PR Merge Webhook</span>
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* 0. Synced Integration Profile & Live Runtime Configuration */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <div>
-              <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-                Integration Profile &amp; Active Runtime Configuration
-              </h2>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Synced with latest Nerve v{profileHealth.engineVersion}, custom-domain ready CORS API, and server-side Gemini AI.
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            disabled={isProbingGemini}
-            onClick={() => fetchRuntimeProfileHealth(true)}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer self-start sm:self-auto whitespace-nowrap shrink-0"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isProbingGemini ? 'animate-spin' : ''}`} />
-            <span>{isProbingGemini ? 'Verifying Gemini...' : 'Verify Live Gemini'}</span>
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
-          <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Platform Contact Email
-            </div>
-            <div className="font-mono font-semibold text-slate-900 dark:text-slate-100 truncate">
-              {profileHealth.contactEmail}
-            </div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-              Active session: {integrationVerifiedEmail}
-            </div>
-          </div>
-
-          <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Engine &amp; Origin
-            </div>
-            <div className="font-mono font-semibold text-slate-900 dark:text-slate-100">
-              v{profileHealth.engineVersion} · {profileHealth.runtime}
-            </div>
-            <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate">
-              {originBase}
-            </div>
-          </div>
-
-          <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Nerve Shark Model
-            </div>
-            <div className="font-mono font-semibold text-slate-900 dark:text-slate-100">
-              {profileHealth.geminiModel}
-            </div>
-            <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
-              Key:{' '}
-              {profileHealth.geminiKeyConfigured
-                ? `Configured (${profileHealth.geminiKeyPrefix})`
-                : profileHealth.geminiKeyPrefix === 'checking'
-                ? 'Checking...'
-                : 'Not configured'}
-            </div>
-          </div>
-
-          <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              Live Gemini Probe
-            </div>
-            <div className="font-mono font-semibold text-slate-900 dark:text-slate-100">
-              {profileHealth.geminiLiveProbe
-                ? profileHealth.geminiLiveProbe.active
-                  ? `ACTIVE (${profileHealth.geminiLiveProbe.latencyMs}ms)`
-                  : 'ERROR'
-                : 'Ready (on-demand)'}
-            </div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-              {profileHealth.geminiLiveProbe?.error || 'On-demand prompt · /exit & AbortController'}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 1. Real-Time CI/CD Build Health Feed */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Activity className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-              CI/CD Build Health
-            </h2>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5">
-              <Filter className="w-3.5 h-3.5 text-slate-400" />
-              <select
-                id="ci-status-filter"
-                aria-label="Filter CI status"
-                value={ciStatusFilter}
-                onChange={(e) =>
-                  setCiStatusFilter(
-                    e.target.value as 'All' | 'Passing' | 'Failing' | 'Running' | 'Pending'
-                  )
-                }
-                className="px-2 py-1 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer"
-              >
-                <option value="All">All ({ciFeed.length})</option>
-                <option value="Passing">
-                  Passing ({ciFeed.filter((i) => i.status === 'Passing').length})
-                </option>
-                <option value="Failing">
-                  Failing ({ciFeed.filter((i) => i.status === 'Failing').length})
-                </option>
-                <option value="Running">
-                  Running ({ciFeed.filter((i) => i.status === 'Running').length})
-                </option>
-                <option value="Pending">
-                  Pending ({ciFeed.filter((i) => i.status === 'Pending').length})
-                </option>
-              </select>
-            </div>
-
+      {/* GitHub-Style Tab Navigation Bar */}
+      <nav
+        aria-label="Integration sections"
+        className="flex items-center gap-1 overflow-x-auto border-b border-[#d0d7de] dark:border-[#30363d]"
+      >
+        {INTEGRATION_TABS.map((tab) => {
+          const isActive = activeIntegrationTab === tab.id;
+          return (
             <button
-              onClick={fetchCiStatusFeed}
-              disabled={isRefreshingCi}
-              className="px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg flex items-center gap-1 cursor-pointer"
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveIntegrationTab(tab.id)}
+              className={`px-3.5 py-2.5 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
+                isActive
+                  ? 'border-blue-600 dark:border-blue-400 text-[#1f2328] dark:text-[#e6edf3] font-semibold'
+                  : 'border-transparent text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] hover:border-[#d0d7de] dark:hover:border-[#30363d]'
+              }`}
             >
-              <RefreshCw className={`w-3 h-3 ${isRefreshingCi ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
+              <span className={isActive ? 'text-blue-600 dark:text-blue-400' : ''}>{tab.icon}</span>
+              <span>{tab.label}</span>
             </button>
-          </div>
-        </div>
+          );
+        })}
+      </nav>
 
-        {filteredCiFeed.length === 0 ? (
-          <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 text-center text-xs text-slate-500 dark:text-slate-400">
-            {ciFeed.length === 0
-              ? 'No repositories tracked yet. Search and track any repository channel in Workspace.'
-              : `No repositories in "${ciStatusFilter}" state.`}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {filteredCiFeed.map((item) => {
-              const last5Builds =
-                item.recentBuilds && item.recentBuilds.length > 0
-                  ? item.recentBuilds.slice(0, 5)
-                  : getDefaultRecentBuilds(item.status, item.latestCommit);
-              const isTooltipOpen = hoveredStatusRepo === item.repo;
+      {/* =====================================================================
+          TAB 1: OVERVIEW (Runtime Profile, CI/CD Health, MTTR, 30-Day Trends)
+      ===================================================================== */}
+      {activeIntegrationTab === 'overview' && (
+        <div className="space-y-4">
+          {/* Runtime Profile & Live Gemini Probe */}
+          <div className="p-4 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  Runtime &amp; Integration Profile
+                </h2>
+                <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
+                  Synced with Nerve v{profileHealth.engineVersion}, custom-domain CORS API, and server-side Gemini AI.
+                </p>
+              </div>
 
-              return (
-                <div
-                  key={item.repo}
-                  className="relative p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/70 flex flex-col justify-between gap-2.5"
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveIntegrationTab('shark')}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] hover:border-blue-500 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold font-mono text-slate-900 dark:text-slate-100 truncate">
-                      {item.repo}
-                    </span>
+                  <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  <span>Need help? Ask Shark</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isProbingGemini}
+                  onClick={() => fetchRuntimeProfileHealth(true)}
+                  className="px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isProbingGemini ? 'animate-spin' : ''}`} />
+                  <span>{isProbingGemini ? 'Verifying...' : 'Verify Live Gemini'}</span>
+                </button>
+              </div>
+            </div>
 
-                    {/* Hover Tooltip for Last 5 Build Results */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+              <div className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-1">
+                <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                  Platform Contact Email
+                </div>
+                <div className="font-mono font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                  {profileHealth.contactEmail}
+                </div>
+                <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] truncate">
+                  Session: {integrationVerifiedEmail}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-1">
+                <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                  Engine &amp; Origin
+                </div>
+                <div className="font-mono font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  v{profileHealth.engineVersion} · {profileHealth.runtime}
+                </div>
+                <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e] truncate">
+                  {originBase}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-1">
+                <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                  Nerve Shark Model
+                </div>
+                <div className="font-mono font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  {profileHealth.geminiModel}
+                </div>
+                <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
+                  Key:{' '}
+                  {profileHealth.geminiKeyConfigured
+                    ? `Configured (${profileHealth.geminiKeyPrefix})`
+                    : profileHealth.geminiKeyPrefix === 'checking'
+                    ? 'Checking...'
+                    : 'Not configured'}
+                </div>
+              </div>
+
+              <div className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-1">
+                <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                  Live Gemini Probe
+                </div>
+                <div className="font-mono font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  {profileHealth.geminiLiveProbe
+                    ? profileHealth.geminiLiveProbe.active
+                      ? `ACTIVE (${profileHealth.geminiLiveProbe.latencyMs}ms)`
+                      : 'ERROR'
+                    : 'Ready (on-demand)'}
+                </div>
+                <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] truncate">
+                  {profileHealth.geminiLiveProbe?.error || 'Dual-mode chatbox & code guide'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* CI/CD Build Health */}
+          <div className="p-4 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  CI/CD Build Health
+                </h2>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Filter className="w-3.5 h-3.5 text-[#656d76]" />
+                  <select
+                    id="ci-status-filter"
+                    aria-label="Filter CI status"
+                    value={ciStatusFilter}
+                    onChange={(e) =>
+                      setCiStatusFilter(
+                        e.target.value as 'All' | 'Passing' | 'Failing' | 'Running' | 'Pending'
+                      )
+                    }
+                    className="px-2 py-1 text-xs font-medium rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none cursor-pointer"
+                  >
+                    <option value="All">All ({ciFeed.length})</option>
+                    <option value="Passing">
+                      Passing ({ciFeed.filter((i) => i.status === 'Passing').length})
+                    </option>
+                    <option value="Failing">
+                      Failing ({ciFeed.filter((i) => i.status === 'Failing').length})
+                    </option>
+                    <option value="Running">
+                      Running ({ciFeed.filter((i) => i.status === 'Running').length})
+                    </option>
+                    <option value="Pending">
+                      Pending ({ciFeed.filter((i) => i.status === 'Pending').length})
+                    </option>
+                  </select>
+                </div>
+
+                <button
+                  onClick={fetchCiStatusFeed}
+                  disabled={isRefreshingCi}
+                  className="px-2.5 py-1 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] rounded-md flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isRefreshingCi ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {filteredCiFeed.length === 0 ? (
+              <div className="p-4 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-center text-xs text-[#656d76] dark:text-[#8b949e]">
+                {ciFeed.length === 0
+                  ? 'No repositories tracked yet. Search and track a repository in Workspace.'
+                  : `No repositories in "${ciStatusFilter}" state.`}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {filteredCiFeed.map((item) => {
+                  const last5Builds =
+                    item.recentBuilds && item.recentBuilds.length > 0
+                      ? item.recentBuilds.slice(0, 5)
+                      : getDefaultRecentBuilds(item.status, item.latestCommit);
+                  const isTooltipOpen = hoveredStatusRepo === item.repo;
+
+                  return (
                     <div
-                      className="relative"
-                      onMouseEnter={() => setHoveredStatusRepo(item.repo)}
-                      onMouseLeave={() => setHoveredStatusRepo(null)}
+                      key={item.repo}
+                      className="relative p-3.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex flex-col justify-between gap-2.5"
                     >
-                      <button
-                        type="button"
-                        onClick={() => setHoveredStatusRepo(isTooltipOpen ? null : item.repo)}
-                        className={`px-2 py-0.5 rounded-full text-[11px] font-semibold flex items-center gap-1.5 shrink-0 cursor-pointer ${getStatusBadgeClasses(
-                          item.status
-                        )}`}
-                      >
-                        <span
-                          className={`w-2 h-2 rounded-full ${getStatusDotClasses(item.status)}`}
-                        />
-                        <span>{item.status}</span>
-                      </button>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold font-mono text-[#1f2328] dark:text-[#e6edf3] truncate">
+                          {item.repo}
+                        </span>
 
-                      {isTooltipOpen && (
                         <div
-                          role="tooltip"
-                          className="absolute right-0 top-full mt-1.5 w-64 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2.5 shadow-xl z-30 space-y-1.5"
+                          className="relative"
+                          onMouseEnter={() => setHoveredStatusRepo(item.repo)}
+                          onMouseLeave={() => setHoveredStatusRepo(null)}
                         >
-                          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-1 text-[11px]">
-                            <span className="font-bold text-slate-900 dark:text-slate-100">
-                              Last 5 Builds
-                            </span>
-                            <span className="font-mono text-slate-400">#{item.branch}</span>
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setHoveredStatusRepo(isTooltipOpen ? null : item.repo)}
+                            className={`px-2 py-0.5 rounded-md text-[11px] font-semibold flex items-center gap-1.5 shrink-0 cursor-pointer ${getStatusBadgeClasses(
+                              item.status
+                            )}`}
+                          >
+                            <span
+                              className={`w-2 h-2 rounded-full ${getStatusDotClasses(item.status)}`}
+                            />
+                            <span>{item.status}</span>
+                          </button>
 
-                          <div className="space-y-1">
-                            {last5Builds.map((b) => (
-                              <div
-                                key={`${item.repo}-${b.buildId}-${b.timestamp}`}
-                                className="flex items-center justify-between text-[11px] font-mono py-1 px-1.5 rounded bg-slate-50 dark:bg-slate-950"
-                              >
-                                <div className="flex items-center gap-1.5">
-                                  <span
-                                    className={`w-1.5 h-1.5 rounded-full ${getStatusDotClasses(
-                                      b.status
-                                    )}`}
-                                  />
-                                  <span className="font-semibold text-slate-800 dark:text-slate-200">
-                                    {b.buildId}
-                                  </span>
-                                  <span className="text-slate-500">{b.commit}</span>
-                                </div>
-                                <span className="text-slate-500 dark:text-slate-400 tabular-nums">
-                                  {b.status} · {b.duration}
+                          {isTooltipOpen && (
+                            <div
+                              role="tooltip"
+                              className="absolute right-0 top-full mt-1.5 w-64 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] p-2.5 shadow-xl z-30 space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between border-b border-[#d0d7de] dark:border-[#30363d] pb-1 text-[11px]">
+                                <span className="font-bold text-[#1f2328] dark:text-[#e6edf3]">
+                                  Last 5 Builds
                                 </span>
+                                <span className="font-mono text-[#656d76]">#{item.branch}</span>
                               </div>
-                            ))}
-                          </div>
+
+                              <div className="space-y-1">
+                                {last5Builds.map((b) => (
+                                  <div
+                                    key={`${item.repo}-${b.buildId}-${b.timestamp}`}
+                                    className="flex items-center justify-between text-[11px] font-mono py-1 px-1.5 rounded bg-[#f6f8fa] dark:bg-[#0d1117]"
+                                  >
+                                    <div className="flex items-center gap-1.5">
+                                      <span
+                                        className={`w-1.5 h-1.5 rounded-full ${getStatusDotClasses(
+                                          b.status
+                                        )}`}
+                                      />
+                                      <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                                        {b.buildId}
+                                      </span>
+                                      <span className="text-[#656d76]">{b.commit}</span>
+                                    </div>
+                                    <span className="text-[#656d76] dark:text-[#8b949e] tabular-nums">
+                                      {b.status} · {b.duration}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      )}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-[#d0d7de] dark:border-[#30363d] text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
+                        <span>
+                          #{item.branch} · {item.latestCommit}
+                        </span>
+                        <select
+                          aria-label={`Set status for ${item.repo}`}
+                          value={item.status}
+                          onChange={(e) =>
+                            handleSetRepoCiBuildStatus(item.repo, e.target.value as CiBuildState)
+                          }
+                          className="px-1.5 py-0.5 rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[11px] font-sans font-medium text-[#1f2328] dark:text-[#e6edf3] cursor-pointer"
+                        >
+                          <option value="Passing">Passing</option>
+                          <option value="Failing">Failing</option>
+                          <option value="Running">Running</option>
+                          <option value="Pending">Pending</option>
+                        </select>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Mean Time to Recovery (MTTR) */}
+          <div className="p-4 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  Mean Time to Recovery (MTTR)
+                </h2>
+              </div>
+
+              <div className="text-xs font-mono text-[#656d76] dark:text-[#8b949e] tabular-nums">
+                Avg MTTR:{' '}
+                <strong className="text-emerald-600 dark:text-emerald-400">
+                  {formatSecondsToMttr(fleetAvgSeconds)}
+                </strong>{' '}
+                · {incidentReports.length} incidents
+              </div>
+            </div>
+
+            {repoMttrStats.length === 0 ? (
+              <div className="p-3.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-center text-xs text-[#656d76] dark:text-[#8b949e]">
+                MTTR metrics populate automatically when issues are reported and resolved via PR merge.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {repoMttrStats.map((stat) => (
+                  <div
+                    key={stat.repo}
+                    className="p-3.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold font-mono text-[#1f2328] dark:text-[#e6edf3] truncate">
+                        {stat.repo}
+                      </span>
+                      <span className="text-xs font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                        {stat.formattedMttr}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1 text-[11px] font-mono text-[#656d76] dark:text-[#8b949e] tabular-nums">
+                      <div className="flex items-center justify-between">
+                        <span>Reported</span>
+                        <span className="text-[#1f2328] dark:text-[#e6edf3]">{stat.latestReportedLabel}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>PR Merged</span>
+                        <span className="text-[#1f2328] dark:text-[#e6edf3]">{stat.latestMergedLabel}</span>
+                      </div>
+                    </div>
+
+                    <div className="pt-1.5 border-t border-[#d0d7de] dark:border-[#30363d] text-[11px] text-[#656d76] dark:text-[#8b949e]">
+                      {stat.resolvedCount}/{stat.incidentsCount} resolved
                     </div>
                   </div>
-
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-200/70 dark:border-slate-800/80 text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                    <span>
-                      #{item.branch} · {item.latestCommit}
-                    </span>
-                    <select
-                      aria-label={`Set status for ${item.repo}`}
-                      value={item.status}
-                      onChange={(e) =>
-                        handleSetRepoCiBuildStatus(item.repo, e.target.value as CiBuildState)
-                      }
-                      className="px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px] font-sans font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
-                    >
-                      <option value="Passing">Passing</option>
-                      <option value="Failing">Failing</option>
-                      <option value="Running">Running</option>
-                      <option value="Pending">Pending</option>
-                    </select>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* 1B. Mean Time to Recovery (MTTR) Summary Card */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-              Mean Time to Recovery (MTTR)
-            </h2>
-          </div>
-
-          <div className="text-xs font-mono text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg tabular-nums">
-            Avg MTTR:{' '}
-            <strong className="text-emerald-600 dark:text-emerald-400">
-              {formatSecondsToMttr(fleetAvgSeconds)}
-            </strong>{' '}
-            ({incidentReports.length} incidents)
-          </div>
-        </div>
-
-        {repoMttrStats.length === 0 ? (
-          <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 text-center text-xs text-slate-500 dark:text-slate-400">
-            MTTR metrics populate automatically when bugs are reported and resolved via PR merge.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {repoMttrStats.map((stat) => (
-              <div
-                key={stat.repo}
-                className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/70 space-y-2"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-bold font-mono text-slate-900 dark:text-slate-100 truncate">
-                    {stat.repo}
-                  </span>
-                  <span className="text-xs font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
-                    {stat.formattedMttr}
-                  </span>
-                </div>
-
-                <div className="space-y-1 text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-                  <div className="flex items-center justify-between">
-                    <span>Reported:</span>
-                    <span className="text-slate-700 dark:text-slate-300">{stat.latestReportedLabel}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>PR Merged:</span>
-                    <span className="text-slate-700 dark:text-slate-300">{stat.latestMergedLabel}</span>
-                  </div>
-                </div>
-
-                <div className="pt-1.5 border-t border-slate-200/70 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
-                  <span>
-                    {stat.resolvedCount}/{stat.incidentsCount} Resolved
-                  </span>
-                </div>
+                ))}
               </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* 2. D3.js 30-Day Deployment Success Rate & Build Duration Trend Chart */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-              30-Day Deployment Success (%) & Build Duration (s)
-            </h2>
+            )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
-            {['all', ...trackedRepoKeys].map((repoOption) => (
-              <button
-                key={repoOption}
-                onClick={() => {
-                  setSelectedChartRepo(repoOption);
-                  setHoveredPoint(null);
-                }}
-                className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-colors cursor-pointer ${
-                  selectedChartRepo === repoOption
-                    ? 'bg-blue-600 text-white font-semibold'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
-                }`}
-              >
-                {repoOption === 'all' ? 'All Repos' : repoOption.split('/')[1] || repoOption}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs bg-slate-50 dark:bg-slate-950 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800">
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-400">
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>Success Rate (%)</span>
-            </span>
-            <span className="flex items-center gap-1.5 font-medium text-blue-700 dark:text-blue-400">
-              <span className="w-2 h-0.5 bg-blue-500 inline-block"></span>
-              <span>Duration (s)</span>
-            </span>
-          </div>
-
-          {latestMetric && (
-            <div className="font-mono text-xs text-slate-700 dark:text-slate-300 flex items-center gap-2">
-              <span>{latestMetric.dateLabel}:</span>
-              <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                {latestMetric.successRate}%
-              </span>
-              <span>·</span>
-              <span className="text-blue-600 dark:text-blue-400 font-bold">
-                {latestMetric.avgDurationSec}s
-              </span>
-            </div>
-          )}
-        </div>
-
-        <div className="w-full overflow-x-auto">
-          <svg
-            ref={chartSvgRef}
-            className="w-full min-w-[560px] h-[220px] select-none"
-          />
-        </div>
-      </div>
-
-      {/* 3. API Key Credentials: Live Mode vs Test Mode */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <Key className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-              API Keys
-            </h2>
-
-            <div className="inline-flex rounded-lg p-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-              <button
-                onClick={() => onChangeEnvironment('live')}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
-                  keyEnvironment === 'live'
-                    ? 'bg-emerald-600 text-white'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                Live (nrve_live_)
-              </button>
-              <button
-                onClick={() => onChangeEnvironment('test')}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
-                  keyEnvironment === 'test'
-                    ? 'bg-amber-600 text-white'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                Test (nrve_test_)
-              </button>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={customOrg}
-              onChange={(e) => setCustomOrg(e.target.value)}
-              placeholder="Org name..."
-              className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-mono"
-            />
-            <button
-              onClick={handleKeyCreation}
-              disabled={isCreatingKey}
-              className="px-3 py-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1 shrink-0 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{isCreatingKey ? '...' : 'Roll Key'}</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-2.5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-            <div className="space-y-1 min-w-0">
-              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                Active {keyEnvironment === 'live' ? 'Live' : 'Test'} API Key
-              </span>
-              <div className="text-xs font-mono font-bold text-slate-900 dark:text-slate-100 truncate">
-                {activeKeySealed ? maskSecretKey(activeKey) : activeKey}
+          {/* 30-Day Deployment Success & Build Duration D3 Chart */}
+          <div className="p-4 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  30-Day Deployment Success (%) &amp; Build Duration (s)
+                </h2>
               </div>
-              {activeKeySealed && (
-                <div className="text-[11px] text-amber-600 dark:text-amber-400">
-                  Key sealed after integration copy. Click <strong>Roll Key</strong> to generate a fresh secret.
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                {['all', ...trackedRepoKeys].map((repoOption) => (
+                  <button
+                    key={repoOption}
+                    onClick={() => {
+                      setSelectedChartRepo(repoOption);
+                      setHoveredPoint(null);
+                    }}
+                    className={`px-2.5 py-1 rounded-md text-xs font-mono transition-colors cursor-pointer ${
+                      selectedChartRepo === repoOption
+                        ? 'bg-blue-600 text-white font-semibold'
+                        : 'bg-[#f6f8fa] dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3]'
+                    }`}
+                  >
+                    {repoOption === 'all' ? 'All Repos' : repoOption.split('/')[1] || repoOption}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs bg-[#f6f8fa] dark:bg-[#161b22] px-3 py-2 rounded-md border border-[#d0d7de] dark:border-[#30363d]">
+              <div className="flex items-center gap-4">
+                <span className="flex items-center gap-1.5 font-medium text-emerald-700 dark:text-emerald-400">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                  <span>Success Rate (%)</span>
+                </span>
+                <span className="flex items-center gap-1.5 font-medium text-blue-700 dark:text-blue-400">
+                  <span className="w-2.5 h-0.5 bg-blue-500 inline-block"></span>
+                  <span>Duration (s)</span>
+                </span>
+              </div>
+
+              {latestMetric && (
+                <div className="font-mono text-xs text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-2 tabular-nums">
+                  <span>{latestMetric.dateLabel}:</span>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                    {latestMetric.successRate}%
+                  </span>
+                  <span>·</span>
+                  <span className="text-blue-600 dark:text-blue-400 font-bold">
+                    {latestMetric.avgDurationSec}s
+                  </span>
                 </div>
               )}
             </div>
 
-            <button
-              type="button"
-              disabled={activeKeySealed}
-              onClick={() => handleCopy(activeKey, 'key')}
-              className="px-2.5 py-1 text-xs font-medium text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg flex items-center gap-1 shrink-0 self-start sm:self-auto cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copiedKey ? 'Copied' : 'Copy Key'}</span>
-            </button>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-slate-200 dark:border-slate-800">
-            {[
-              'trust.verify',
-              'sovereignty.read',
-              'sovereignty.write',
-              'p2p.messaging',
-              'p2p.channel_control',
-              'p2p.message_search',
-              'p2p.message_edit',
-              'p2p.message_delete',
-              'p2p.reactions',
-              'p2p.webrtc_signaling',
-              'p2p.broadcast_fallback',
-              'p2p.e2ee_aes_gcm_256',
-              'p2p.pbkdf2_100k',
-              'p2p.chunked_file_stream',
-              'p2p.datachannel_16kb_backpressure',
-              'p2p.terminal_log_stream',
-              'p2p.json_inspector',
-              'p2p.quick_reply',
-              'p2p.share_snippet',
-              'p2p.repo_autodeploy',
-              'peers.search_and_delete',
-              'users.email_lookup',
-              'pull_request.diff_review',
-              'syntax.parse',
-              'syntax.highlighter',
-              'ansi.color_schemes',
-              'explorer.tree',
-              'codespaces.exec',
-              'codespaces.multi_terminal',
-              'codespaces.split_terminal',
-              'codespaces.macros',
-              'codespaces.log_filter',
-              'codespaces.log_download_txt',
-              'codespaces.history',
-              'codespaces.autoscroll',
-              'codespaces.build_summary',
-              'codespaces.cmd_suggestions',
-              'codespaces.line_numbers',
-              'codespaces.terminal_theme',
-              'codespaces.resource_telemetry',
-              'ssh.keys',
-              'ssh.generate',
-              'ssh.universal_remotes',
-              'ci.telemetry',
-              'ci.d3_30d_trends',
-              'ci.mttr',
-              'ci.build_history',
-              'copilot.collaborate',
-              'shark.collaborate',
-              'shark.cancel',
-              'incidents.dispatch',
-              'incidents.ai_log_triage',
-              'incidents.line_numbered_log_triage',
-              'incidents.d3_pipeline',
-              'webhooks.listen',
-              'engine.third_party_callout',
-              'integration.gmail_gate_autolock',
-              'firebase.firestore_sync',
-              'firebase.security_rules',
-              'offline.queue_sync',
-              'offline.queue_auto_flush',
-              'auth.multi_provider',
-              'auth.github_provider_oauth',
-              'auth.google_provider_oauth',
-              'auth.google_oauth',
-              'github.ssh_keys_manage',
-              'health.gemini_probe',
-              'runtime.vercel_serverless',
-            ].map((scope) => (
-              <span
-                key={scope}
-                className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400"
-              >
-                {scope}
-              </span>
-            ))}
+            <div className="w-full overflow-x-auto">
+              <svg
+                ref={chartSvgRef}
+                className="w-full min-w-[560px] h-[220px] select-none"
+              />
+            </div>
           </div>
         </div>
+      )}
 
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold text-slate-700 dark:text-slate-300">cURL</span>
-            <button
-              onClick={() => handleCopy(curlQuickstart, 'quickstart')}
-              className="text-slate-600 dark:text-slate-400 flex items-center gap-1 cursor-pointer font-medium"
-            >
-              {copiedQuickstart ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-              <span>{copiedQuickstart ? 'Copied' : 'Copy'}</span>
-            </button>
-          </div>
-          <pre className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-xs font-mono overflow-x-auto leading-relaxed">
-            {curlQuickstart}
-          </pre>
-        </div>
-      </div>
-
-      {/* 3a. Third-Party API & Engine Callout Gateway */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Globe className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            <div>
-              <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-                Third-Party API & Engine Callout Gateway (CORS Enabled)
+      {/* =====================================================================
+          TAB 2: API KEYS (Live/Test Switcher, Roll Key, cURL, Collapsible Scopes)
+      ===================================================================== */}
+      {activeIntegrationTab === 'keys' && (
+        <div className="p-4 sm:p-5 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <Key className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                API Keys
               </h2>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                External apps, CI pipelines, and third-party services can fetch or call out any Nerve engine module directly via <code className="font-mono">/api/v1/engine/call</code> or <code className="font-mono">/api/v1/engine/manifest</code>.
-              </p>
+
+              <div className="inline-flex rounded-md p-0.5 bg-[#f6f8fa] dark:bg-[#161b22] border border-[#d0d7de] dark:border-[#30363d]">
+                <button
+                  onClick={() => onChangeEnvironment('live')}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                    keyEnvironment === 'live'
+                      ? 'bg-emerald-600 text-white'
+                      : 'text-[#656d76] dark:text-[#8b949e]'
+                  }`}
+                >
+                  Live (nrve_live_)
+                </button>
+                <button
+                  onClick={() => onChangeEnvironment('test')}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                    keyEnvironment === 'test'
+                      ? 'bg-amber-600 text-white'
+                      : 'text-[#656d76] dark:text-[#8b949e]'
+                  }`}
+                >
+                  Test (nrve_test_)
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={customOrg}
+                onChange={(e) => setCustomOrg(e.target.value)}
+                placeholder="Label or org name..."
+                className="px-2.5 py-1.5 text-xs rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button
+                onClick={handleKeyCreation}
+                disabled={isCreatingKey}
+                className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md flex items-center gap-1 shrink-0 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{isCreatingKey ? 'Rolling...' : 'Roll Key'}</span>
+              </button>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <select
-              aria-label="Select engine module to call"
-              value={selectedEngineModule}
-              onChange={(e) => setSelectedEngineModule(e.target.value)}
-              className="px-2.5 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 cursor-pointer"
-            >
-              <option value="nerve_shark">Engine: nerve_shark (Nerve Shark On-Demand gemini-4-hydrogen)</option>
-              <option value="health_probe">Engine: health_probe (Vercel Runtime, nervep2p@gmail.com &amp; Gemini AQ. Check)</option>
-              <option value="p2p_channel_control">Engine: p2p_channel_control (Close Chat, Cancel Shark &amp; /exit Syntax)</option>
-              <option value="p2p_message_search">Engine: p2p_message_search (In-Chat Message Search & Highlight)</option>
-              <option value="p2p_message_lifecycle">Engine: p2p_message_lifecycle (E2EE Edit & Delete for Me/Both)</option>
-              <option value="users_by_email">Engine: users_by_email (Email-Linked @users Lookup)</option>
-              <option value="triage">Engine: triage (Automated CI Log Triage)</option>
-              <option value="p2p_datachannel">Engine: p2p_datachannel (WebRTC 16KB Stream & Backpressure)</option>
-              <option value="terminal_log_export">Engine: terminal_log_export (Raw .txt Session Log Download)</option>
-              <option value="firebase_firestore">Engine: firebase_firestore (Firestore Peer & State Sync)</option>
-              <option value="peer_lifecycle">Engine: peer_lifecycle (User Peer Search & Deletion)</option>
-              <option value="github_oauth">Engine: github_oauth (GitHub OAuth via githubProvider)</option>
-              <option value="google_oauth">Engine: google_oauth (Google OAuth via googleProvider)</option>
-              <option value="github_ssh_keys">Engine: github_ssh_keys (GitHub API SSH Key Management)</option>
-              <option value="third_party_ssh">Engine: third_party_ssh (GitLab/Bitbucket/Azure SSH Keys)</option>
-              <option value="p2p_e2ee">Engine: p2p_e2ee (AES-GCM-256 & PBKDF2 Verification)</option>
-              <option value="offline_flush">Engine: offline_flush (Offline Queue Auto-Flush Sync)</option>
-              <option value="syntax">Engine: syntax (Deep-Link AST Parser)</option>
-              <option value="codespaces">Engine: codespaces (Cloud Container Exec)</option>
-              <option value="incidents">Engine: incidents (/bug Dispatch & D3 Pipeline)</option>
-              <option value="ci_telemetry">Engine: ci_telemetry (30-Day D3 Trends & MTTR)</option>
-              <option value="ssh_surface">Engine: ssh_surface (Universal SSH Key Auth)</option>
-              <option value="trust">Engine: trust (PoW & Universal Follow Graph)</option>
-              <option value="sovereignty">Engine: sovereignty (Focus Switch)</option>
-            </select>
-            <button
-              type="button"
-              onClick={handleCallThirdPartyEngine}
-              disabled={isCallingEngine}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1.5 cursor-pointer shrink-0"
-            >
-              <Play className="w-3 h-3" />
-              <span>{isCallingEngine ? 'Calling Engine...' : 'Test Engine Callout'}</span>
-            </button>
+          <div className="p-4 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="space-y-1 min-w-0">
+                <span className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                  Active {keyEnvironment === 'live' ? 'Live' : 'Test'} Secret Key
+                </span>
+                <div className="text-xs sm:text-sm font-mono font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                  {activeKeySealed ? maskSecretKey(activeKey) : activeKey}
+                </div>
+                {activeKeySealed && (
+                  <div className="text-[11px] text-amber-700 dark:text-amber-400">
+                    Key sealed after first copy. Click <strong>Roll Key</strong> to issue a new key.
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                disabled={activeKeySealed}
+                onClick={() => handleCopy(activeKey, 'key')}
+                className="px-3 py-1.5 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] rounded-md flex items-center gap-1.5 shrink-0 self-start sm:self-auto cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedKey ? 'Copied' : 'Copy Key'}</span>
+              </button>
+            </div>
+
+            {/* Clean Collapsible & Searchable Granted Scopes */}
+            <div className="pt-3 border-t border-[#d0d7de] dark:border-[#30363d] space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAllScopes((prev) => !prev)}
+                  className="text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-1.5 cursor-pointer"
+                >
+                  {showAllScopes ? (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                  <span>Granted Scopes ({ALL_INTEGRATION_SCOPES.length})</span>
+                </button>
+                {showAllScopes && (
+                  <div className="relative w-48">
+                    <Search className="w-3 h-3 text-[#656d76] absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={scopeSearchQuery}
+                      onChange={(e) => setScopeSearchQuery(e.target.value)}
+                      placeholder="Filter scopes..."
+                      className="w-full pl-6 pr-2 py-1 text-[11px] font-mono rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {showAllScopes && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 max-h-52 overflow-y-auto pt-1 font-mono text-[11px] text-[#656d76] dark:text-[#8b949e]">
+                  {filteredScopes.map((scope) => (
+                    <div key={scope} className="truncate py-0.5">
+                      • {scope}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3]">Quickstart cURL</span>
+              <button
+                onClick={() => handleCopy(curlQuickstart, 'quickstart')}
+                className="text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] flex items-center gap-1 cursor-pointer font-medium"
+              >
+                {copiedQuickstart ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedQuickstart ? 'Copied' : 'Copy'}</span>
+              </button>
+            </div>
+            <pre className="p-3.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] text-xs font-mono overflow-x-auto leading-relaxed">
+              {curlQuickstart}
+            </pre>
           </div>
         </div>
+      )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-mono text-[11px] text-slate-600 dark:text-slate-400">
-                External Third-Party fetch() Callout
-              </span>
+      {/* =====================================================================
+          TAB 3: SSH KEYS (Workspace Deploy Keys + GitHub Account SSH Keys)
+      ===================================================================== */}
+      {activeIntegrationTab === 'ssh' && (
+        <div className="space-y-4">
+          {/* Workspace Deploy SSH Keys */}
+          <div className="p-4 sm:p-5 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <div>
+                  <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                    Deploy &amp; Remote SSH Keys
+                  </h2>
+                  <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
+                    Generate or attach ed25519 / RSA keys for GitHub, GitLab, Bitbucket, or custom Git remotes.
+                  </p>
+                </div>
+              </div>
+
               <button
                 type="button"
                 onClick={() => {
-                  navigator.clipboard.writeText(thirdPartyFetchSnippet);
-                  setCopiedEngineFetch(true);
-                  setTimeout(() => setCopiedEngineFetch(false), 2000);
+                  setSshError('');
+                  setShowSshKeyModal(true);
                 }}
-                className="text-slate-600 dark:text-slate-400 flex items-center gap-1 cursor-pointer font-medium"
+                className="px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1.5 cursor-pointer self-start sm:self-auto whitespace-nowrap"
               >
-                {copiedEngineFetch ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-                <span>{copiedEngineFetch ? 'Copied' : 'Copy fetch()'}</span>
+                <Plus className="w-3.5 h-3.5" />
+                <span>New SSH Key</span>
               </button>
             </div>
-            <pre className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-[11px] font-mono overflow-x-auto leading-relaxed">
-              {thirdPartyFetchSnippet}
-            </pre>
-          </div>
 
-          <div className="space-y-1">
-            <div className="text-[11px] font-mono text-slate-600 dark:text-slate-400">
-              Live Engine Response (/api/v1/engine/call)
-            </div>
-            <div className="h-[155px] overflow-auto rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 p-3 font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
-              {engineCalloutOutput ? (
-                <pre className="whitespace-pre-wrap">{engineCalloutOutput}</pre>
-              ) : (
-                <div className="h-full flex items-center justify-center text-slate-500 dark:text-slate-400 text-center">
-                  Click &quot;Test Engine Callout&quot; to invoke /api/v1/engine/call as an external third-party app.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
+            {sshKeys.length === 0 ? (
+              <div className="p-5 rounded-md border border-dashed border-[#d0d7de] dark:border-[#30363d] text-xs text-[#656d76] dark:text-[#8b949e] flex flex-col items-center justify-center gap-2.5 text-center">
+                <span>No deploy SSH keys added yet.</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSshError('');
+                    setShowSshKeyModal(true);
+                  }}
+                  className="px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add SSH Key</span>
+                </button>
+              </div>
+            ) : (
+              <div className="divide-y divide-[#d0d7de] dark:divide-[#30363d] rounded-md border border-[#d0d7de] dark:border-[#30363d] overflow-hidden">
+                {sshKeys.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3.5 bg-[#f6f8fa] dark:bg-[#161b22] space-y-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                          {item.title}
+                        </div>
+                        <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
+                          {item.targetRepo.includes('@') || item.targetRepo.includes(':')
+                            ? item.targetRepo
+                            : `ssh://git@${item.targetRepo}.git`}{' '}
+                          · {item.status} · {item.keyType}
+                        </div>
+                      </div>
 
-      {/* 3b. SSH Key Configuration Interface & Modal Trigger for Local Git & Third-Party Remotes */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-              SSH Key Configuration (Universal Git & Third-Party App Surface Authentication)
-            </h2>
-          </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleCopySshItem(item.publicKey, `pub-${item.id}`)}
+                          className="px-2 py-1 text-[11px] font-medium rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1 cursor-pointer"
+                        >
+                          {copiedSshId === `pub-${item.id}` ? (
+                            <Check className="w-3 h-3 text-emerald-500" />
+                          ) : (
+                            <Copy className="w-3 h-3" />
+                          )}
+                          <span>{copiedSshId === `pub-${item.id}` ? 'Copied' : 'Public Key'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopySshItem(item.gitSshCommand, `cmd-${item.id}`)}
+                          className="px-2 py-1 text-[11px] font-medium rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1 cursor-pointer"
+                        >
+                          {copiedSshId === `cmd-${item.id}` ? (
+                            <Check className="w-3 h-3 text-emerald-500" />
+                          ) : (
+                            <Terminal className="w-3 h-3" />
+                          )}
+                          <span>{copiedSshId === `cmd-${item.id}` ? 'Copied' : 'Git SSH Cmd'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSshKey(item.id)}
+                          title="Delete SSH Key"
+                          className="p-1 rounded border border-[#d0d7de] dark:border-[#30363d] text-[#656d76] hover:text-red-500 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setSshError('');
-                setShowSshKeyModal(true);
-              }}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add SSH Key</span>
-            </button>
-          </div>
-        </div>
-
-        {sshKeys.length === 0 ? (
-          <div className="p-4 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 flex flex-col items-center justify-center gap-2 text-center">
-            <span>
-              No SSH public keys saved yet. Add or generate an SSH public key to authenticate your local Git surface or third-party deployment remotes.
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setSshError('');
-                setShowSshKeyModal(true);
-              }}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add SSH Public Key</span>
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {sshKeys.map((item) => (
-              <div
-                key={item.id}
-                className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-2"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                      {item.title}
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
-                      {item.targetRepo.includes('@') || item.targetRepo.includes(':')
-                        ? item.targetRepo
-                        : `ssh://git@${item.targetRepo}.git`}
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-semibold">
-                      {item.status} · {item.keyType}
-                    </span>
+                    <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e] truncate">
+                      {item.fingerprint}
+                    </div>
+                    <div className="text-[11px] font-mono text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#0d1117] px-2.5 py-1.5 rounded border border-[#d0d7de] dark:border-[#30363d] truncate">
+                      {item.publicKey}
+                    </div>
                   </div>
+                ))}
+              </div>
+            )}
+          </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleCopySshItem(item.publicKey, `pub-${item.id}`)}
-                      className="px-2 py-1 text-[11px] font-medium rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 flex items-center gap-1 cursor-pointer"
-                    >
-                      {copiedSshId === `pub-${item.id}` ? (
-                        <Check className="w-3 h-3 text-emerald-500" />
-                      ) : (
-                        <Copy className="w-3 h-3" />
-                      )}
-                      <span>{copiedSshId === `pub-${item.id}` ? 'Copied' : 'Public Key'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleCopySshItem(item.gitSshCommand, `cmd-${item.id}`)}
-                      className="px-2 py-1 text-[11px] font-medium rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 flex items-center gap-1 cursor-pointer"
-                    >
-                      {copiedSshId === `cmd-${item.id}` ? (
-                        <Check className="w-3 h-3 text-emerald-500" />
-                      ) : (
-                        <Terminal className="w-3 h-3" />
-                      )}
-                      <span>{copiedSshId === `cmd-${item.id}` ? 'Copied' : 'Git SSH Cmd'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteSshKey(item.id)}
-                      title="Revoke SSH Key"
-                      className="p-1 rounded border border-slate-300 dark:border-slate-700 text-slate-500 hover:text-red-500 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="text-[11px] font-mono text-slate-600 dark:text-slate-400 truncate">
-                  Fingerprint: {item.fingerprint}
-                </div>
-                <div className="text-[11px] font-mono text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-800 truncate">
-                  {item.publicKey}
+          {/* GitHub Account SSH Keys */}
+          <div className="p-4 sm:p-5 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] space-y-3.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2">
+                <svg
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                  className="w-4 h-4 fill-current text-[#1f2328] dark:text-[#e6edf3] shrink-0"
+                >
+                  <path
+                    fillRule="evenodd"
+                    clipRule="evenodd"
+                    d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
+                  />
+                </svg>
+                <div>
+                  <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                    GitHub Account SSH Keys
+                  </h2>
+                  <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
+                    Manage authentication and signing keys via GitHub API /user/keys.
+                  </p>
                 </div>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
 
-      {/* Modal for Adding & Saving SSH Public Keys in Integration Tab */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isLoadingGitHubKeys}
+                  onClick={() => fetchGitHubSshKeys()}
+                  className="px-2.5 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingGitHubKeys ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddGitHubKeyForm(!showAddGitHubKeyForm);
+                    setGitHubKeyError('');
+                  }}
+                  className="px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{showAddGitHubKeyForm ? 'Close Form' : 'Add GitHub Key'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-[#d0d7de] dark:border-[#30363d]">
+              <input
+                type="text"
+                value={gitHubUsernameFilter}
+                onChange={(e) => setGitHubUsernameFilter(e.target.value)}
+                placeholder="Query public SSH keys by GitHub username (e.g. torvalds)..."
+                className="flex-1 px-3 py-1.5 text-xs font-mono rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                disabled={isLoadingGitHubKeys}
+                onClick={() => fetchGitHubSshKeys(gitHubUsernameFilter)}
+                className="px-3 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] cursor-pointer shrink-0"
+              >
+                {gitHubUsernameFilter.trim() ? `Fetch @${gitHubUsernameFilter}` : 'Fetch Account Keys'}
+              </button>
+            </div>
+
+            {gitHubKeyError && (
+              <div className="p-2.5 rounded-md border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400 text-xs flex items-center justify-between gap-2">
+                <span>{gitHubKeyError}</span>
+                <button
+                  type="button"
+                  onClick={() => setGitHubKeyError('')}
+                  className="p-0.5 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+            {gitHubKeySuccess && (
+              <div className="p-2.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-xs flex items-center justify-between gap-2">
+                <span>{gitHubKeySuccess}</span>
+                <button
+                  type="button"
+                  onClick={() => setGitHubKeySuccess('')}
+                  className="p-0.5 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+
+            {showAddGitHubKeyForm && (
+              <form
+                onSubmit={handleAddGitHubSshKey}
+                className="p-3.5 rounded-md border border-blue-500/40 bg-[#f6f8fa] dark:bg-[#161b22] space-y-3 text-xs"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                    Add New GitHub SSH Key
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handlePopulateSampleEd25519}
+                    className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer font-medium"
+                  >
+                    + Sample ed25519 Key
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <label className="font-medium text-[#1f2328] dark:text-[#e6edf3] block">
+                      Title
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={newGitHubKeyTitle}
+                      onChange={(e) => setNewGitHubKeyTitle(e.target.value)}
+                      placeholder="e.g. Workstation ed25519"
+                      className="w-full px-2.5 py-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-medium text-[#1f2328] dark:text-[#e6edf3] block">
+                      Key Type
+                    </label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setNewGitHubKeyType('authentication')}
+                        className={`py-1.5 px-2 rounded-md border text-center font-medium cursor-pointer ${
+                          newGitHubKeyType === 'authentication'
+                            ? 'border-blue-600 bg-blue-600 text-white font-semibold'
+                            : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3]'
+                        }`}
+                      >
+                        Authentication
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNewGitHubKeyType('signing')}
+                        className={`py-1.5 px-2 rounded-md border text-center font-medium cursor-pointer ${
+                          newGitHubKeyType === 'signing'
+                            ? 'border-blue-600 bg-blue-600 text-white font-semibold'
+                            : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3]'
+                        }`}
+                      >
+                        Signing
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-medium text-[#1f2328] dark:text-[#e6edf3] block">
+                    OpenSSH Public Key
+                  </label>
+                  <textarea
+                    rows={3}
+                    required
+                    value={newGitHubKeyBody}
+                    onChange={(e) => setNewGitHubKeyBody(e.target.value)}
+                    placeholder="Begins with 'ssh-ed25519', 'ssh-rsa'..."
+                    className="w-full px-2.5 py-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddGitHubKeyForm(false)}
+                    className="px-3 py-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingGitHubKey}
+                    className="px-3.5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold cursor-pointer flex items-center gap-1.5"
+                  >
+                    {isSubmittingGitHubKey && <RefreshCw className="w-3 h-3 animate-spin" />}
+                    <span>{isSubmittingGitHubKey ? 'Adding...' : 'Add Key to GitHub'}</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {gitHubSshKeys.length === 0 ? (
+              <div className="p-4 rounded-md border border-dashed border-[#d0d7de] dark:border-[#30363d] text-xs text-[#656d76] dark:text-[#8b949e] text-center">
+                {gitHubUsernameFilter.trim()
+                  ? `No public SSH keys found for @${gitHubUsernameFilter}.`
+                  : 'No GitHub SSH keys loaded yet. Click Add GitHub Key or query a username above.'}
+              </div>
+            ) : (
+              <div className="divide-y divide-[#d0d7de] dark:divide-[#30363d] rounded-md border border-[#d0d7de] dark:border-[#30363d] overflow-hidden">
+                {gitHubSshKeys.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3.5 bg-[#f6f8fa] dark:bg-[#161b22] space-y-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                          {item.title}
+                        </div>
+                        <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
+                          {item.verified ? 'Verified' : 'Unverified'} ·{' '}
+                          {item.read_only ? 'Signing Key' : 'Authentication Key'} · ID #{item.id}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleCopyGitHubKey(item.key, item.id)}
+                          className="px-2 py-1 rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[11px] font-mono text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1 cursor-pointer"
+                        >
+                          {copiedGitHubKeyId === item.id ? (
+                            <Check className="w-3 h-3 text-emerald-500" />
+                          ) : (
+                            <Copy className="w-3 h-3" />
+                          )}
+                          <span>{copiedGitHubKeyId === item.id ? 'Copied' : 'Copy'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteGitHubSshKey(item.id)}
+                          title="Revoke SSH Key from GitHub"
+                          className="p-1 rounded border border-[#d0d7de] dark:border-[#30363d] text-[#656d76] hover:text-red-500 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] font-mono text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#0d1117] px-2.5 py-1.5 rounded border border-[#d0d7de] dark:border-[#30363d] truncate">
+                      {item.key}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal for Adding & Saving SSH Public Keys */}
       {showSshKeyModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-3">
-          <div className="w-full max-w-md rounded-xl border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white p-4 space-y-3.5 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-2.5">
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3">
+          <div className="w-full max-w-md rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] p-4 space-y-3.5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#d0d7de] dark:border-[#30363d] pb-2.5">
               <div className="flex items-center gap-2">
                 <Shield className="w-4 h-4 text-emerald-500" />
-                <h3 className="text-sm font-bold">Add & Save SSH Public Key</h3>
+                <h3 className="text-sm font-bold">Add SSH Public Key</h3>
               </div>
               <button
                 type="button"
                 onClick={() => setShowSshKeyModal(false)}
-                className="p-1 rounded-lg text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                className="p-1 rounded text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -2659,7 +3066,7 @@ const data = await response.json();`;
                   value={sshTitle}
                   onChange={(e) => setSshTitle(e.target.value)}
                   placeholder="e.g. Local Git Surface / MacBook-Pro"
-                  className="w-full px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
@@ -2671,7 +3078,7 @@ const data = await response.json();`;
                   value={sshTargetRepo}
                   onChange={(e) => setSshTargetRepo(e.target.value)}
                   placeholder="owner/private-repo or app-remote"
-                  className="w-full px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full px-3 py-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
@@ -2682,10 +3089,10 @@ const data = await response.json();`;
                       key={kType}
                       type="button"
                       onClick={() => setSshKeyType(kType)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold uppercase transition-colors cursor-pointer border ${
+                      className={`px-2.5 py-1 rounded-md text-xs font-mono font-semibold uppercase cursor-pointer border ${
                         sshKeyType === kType
                           ? 'bg-blue-600 text-white border-blue-600'
-                          : 'bg-white dark:bg-black text-black dark:text-white border-neutral-300 dark:border-neutral-800'
+                          : 'bg-[#f6f8fa] dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] border-[#d0d7de] dark:border-[#30363d]'
                       }`}
                     >
                       {kType}
@@ -2697,13 +3104,11 @@ const data = await response.json();`;
                   type="button"
                   disabled={isGeneratingSsh}
                   onClick={() => handleGenerateSshKey(true)}
-                  className="px-2.5 py-1 rounded-lg text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 flex items-center gap-1 cursor-pointer"
+                  className="px-2.5 py-1 rounded-md text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 flex items-center gap-1 cursor-pointer"
                 >
                   <Key className="w-3.5 h-3.5" />
                   <span>
-                    {isGeneratingSsh
-                      ? 'Generating...'
-                      : `Generate ${sshKeyType.toUpperCase()} Key`}
+                    {isGeneratingSsh ? 'Generating...' : `Generate ${sshKeyType.toUpperCase()}`}
                   </span>
                 </button>
               </div>
@@ -2715,8 +3120,8 @@ const data = await response.json();`;
                   required
                   value={sshPublicKeyInput}
                   onChange={(e) => setSshPublicKeyInput(e.target.value)}
-                  placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@local-git-surface"
-                  className="w-full p-2.5 rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... nervep2p@gmail.com"
+                  className="w-full p-2.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
@@ -2730,14 +3135,14 @@ const data = await response.json();`;
                 <button
                   type="button"
                   onClick={() => setShowSshKeyModal(false)}
-                  className="px-3 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-800 text-black dark:text-white font-medium cursor-pointer"
+                  className="px-3 py-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] font-medium cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isGeneratingSsh}
-                  className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer"
                 >
                   {isGeneratingSsh ? 'Saving...' : 'Save SSH Key'}
                 </button>
@@ -2747,410 +3152,383 @@ const data = await response.json();`;
         </div>
       )}
 
-      {/* 3c. GitHub Account SSH Keys Management (GitHub API user/keys) */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3.5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2">
-            <svg
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              className="w-4 h-4 fill-current text-slate-900 dark:text-slate-100 shrink-0"
-            >
-              <path
-                fillRule="evenodd"
-                clipRule="evenodd"
-                d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
-              />
-            </svg>
-            <div>
-              <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
-                <span>GitHub Account SSH Keys</span>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-slate-600 dark:text-slate-400 font-normal">
-                  GitHub API /user/keys
-                </span>
-              </h2>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Manage authentication and commit-signing SSH public keys linked directly to your GitHub developer account.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={isLoadingGitHubKeys}
-              onClick={() => fetchGitHubSshKeys()}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-1 cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingGitHubKeys ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setShowAddGitHubKeyForm(!showAddGitHubKeyForm);
-                setGitHubKeyError('');
-              }}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>{showAddGitHubKeyForm ? 'Close Form' : 'Add Key'}</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Optional Public Keys Query Bar for Any GitHub User */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1 border-t border-slate-100 dark:border-slate-800/60">
-          <div className="relative flex-1">
-            <input
-              type="text"
-              value={gitHubUsernameFilter}
-              onChange={(e) => setGitHubUsernameFilter(e.target.value)}
-              placeholder="Query public SSH keys by GitHub username (e.g. torvalds, octocat, or empty for account keys)..."
-              className="w-full px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-          <button
-            type="button"
-            disabled={isLoadingGitHubKeys}
-            onClick={() => fetchGitHubSshKeys(gitHubUsernameFilter)}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 cursor-pointer shrink-0"
-          >
-            {gitHubUsernameFilter.trim() ? `Fetch @${gitHubUsernameFilter}` : 'Fetch Account Keys'}
-          </button>
-        </div>
-
-        {/* Error / Success Feedback Banners */}
-        {gitHubKeyError && (
-          <div className="p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400 text-xs flex items-center justify-between gap-2">
-            <span>{gitHubKeyError}</span>
-            <button
-              type="button"
-              onClick={() => setGitHubKeyError('')}
-              className="p-0.5 text-red-500 hover:text-red-700 cursor-pointer"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-        {gitHubKeySuccess && (
-          <div className="p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs flex items-center justify-between gap-2">
-            <span>{gitHubKeySuccess}</span>
-            <button
-              type="button"
-              onClick={() => setGitHubKeySuccess('')}
-              className="p-0.5 text-emerald-500 hover:text-emerald-700 cursor-pointer"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-
-        {/* 'Add Key' Form Component */}
-        {showAddGitHubKeyForm && (
-          <form
-            onSubmit={handleAddGitHubSshKey}
-            className="p-3.5 rounded-xl border border-blue-500/30 bg-blue-50/20 dark:bg-blue-950/20 space-y-3 text-xs"
-          >
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
-                <Plus className="w-3.5 h-3.5 text-blue-500" />
-                <span>Add New GitHub SSH Key</span>
-              </span>
-              <button
-                type="button"
-                onClick={handlePopulateSampleEd25519}
-                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer font-medium"
-              >
-                + Quick Sample ed25519 Key
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <div className="space-y-1">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
-                  Title
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newGitHubKeyTitle}
-                  onChange={(e) => setNewGitHubKeyTitle(e.target.value)}
-                  placeholder="e.g. Workstation ed25519"
-                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+      {/* =====================================================================
+          TAB 4: API & SDKS (Engine Callout Gateway, SDK Snippets, Endpoint Runner)
+      ===================================================================== */}
+      {activeIntegrationTab === 'api' && (
+        <div className="space-y-4">
+          {/* Third-Party Engine Callout Gateway */}
+          <div className="p-4 sm:p-5 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Globe className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <div>
+                  <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                    Third-Party Engine Callout Gateway
+                  </h2>
+                  <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
+                    Invoke any Nerve module from external apps or CI via <code className="font-mono">/api/v1/engine/call</code>.
+                  </p>
+                </div>
               </div>
 
-              <div className="space-y-1">
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block">
-                  Key Type
-                </label>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setNewGitHubKeyType('authentication')}
-                    className={`py-1.5 px-2 rounded-lg border text-center font-medium cursor-pointer transition-colors ${
-                      newGitHubKeyType === 'authentication'
-                        ? 'border-blue-600 bg-blue-600 text-white font-semibold'
-                        : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-300'
-                    }`}
-                  >
-                    Authentication Key
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewGitHubKeyType('signing')}
-                    className={`py-1.5 px-2 rounded-lg border text-center font-medium cursor-pointer transition-colors ${
-                      newGitHubKeyType === 'signing'
-                        ? 'border-purple-600 bg-purple-600 text-white font-semibold'
-                        : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-300'
-                    }`}
-                  >
-                    Signing Key
-                  </button>
-                </div>
+              <div className="flex items-center gap-2">
+                <select
+                  aria-label="Select engine module to call"
+                  value={selectedEngineModule}
+                  onChange={(e) => setSelectedEngineModule(e.target.value)}
+                  className="px-2.5 py-1.5 text-xs font-mono rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] cursor-pointer max-w-[260px]"
+                >
+                  <option value="nerve_shark">nerve_shark (Dual-Mode Chatbox &amp; Code AI)</option>
+                  <option value="health_probe">health_probe (Vercel Runtime &amp; Gemini Probe)</option>
+                  <option value="p2p_channel_control">p2p_channel_control (Close / Cancel / /exit)</option>
+                  <option value="p2p_message_search">p2p_message_search (In-Chat Search)</option>
+                  <option value="p2p_message_lifecycle">p2p_message_lifecycle (Edit &amp; Delete)</option>
+                  <option value="users_by_email">users_by_email (Email-Linked @users)</option>
+                  <option value="triage">triage (Automated CI Log Triage)</option>
+                  <option value="p2p_datachannel">p2p_datachannel (WebRTC 16KB Stream)</option>
+                  <option value="terminal_log_export">terminal_log_export (.txt Log Export)</option>
+                  <option value="firebase_firestore">firebase_firestore (Firestore Sync)</option>
+                  <option value="peer_lifecycle">peer_lifecycle (Peer Search &amp; Delete)</option>
+                  <option value="github_oauth">github_oauth (GitHub OAuth)</option>
+                  <option value="google_oauth">google_oauth (Google OAuth)</option>
+                  <option value="github_ssh_keys">github_ssh_keys (GitHub SSH Keys)</option>
+                  <option value="third_party_ssh">third_party_ssh (GitLab/Bitbucket SSH)</option>
+                  <option value="p2p_e2ee">p2p_e2ee (AES-GCM-256 Verification)</option>
+                  <option value="offline_flush">offline_flush (Offline Queue Flush)</option>
+                  <option value="syntax">syntax (Deep-Link AST Parser)</option>
+                  <option value="codespaces">codespaces (Cloud Container Exec)</option>
+                  <option value="incidents">incidents (/bug Dispatch)</option>
+                  <option value="ci_telemetry">ci_telemetry (30-Day Trends &amp; MTTR)</option>
+                  <option value="ssh_surface">ssh_surface (Universal SSH Auth)</option>
+                  <option value="trust">trust (PoW &amp; Follow Graph)</option>
+                  <option value="sovereignty">sovereignty (Focus Switch)</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={handleCallThirdPartyEngine}
+                  disabled={isCallingEngine}
+                  className="px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1.5 cursor-pointer shrink-0"
+                >
+                  <Play className="w-3 h-3" />
+                  <span>{isCallingEngine ? 'Calling...' : 'Test Call'}</span>
+                </button>
               </div>
             </div>
 
-            <div className="space-y-1">
-              <label className="font-semibold text-slate-700 dark:text-slate-300 block">
-                Key (OpenSSH Public Key)
-              </label>
-              <textarea
-                rows={3}
-                required
-                value={newGitHubKeyBody}
-                onChange={(e) => setNewGitHubKeyBody(e.target.value)}
-                placeholder="Begins with 'ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256'..."
-                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-mono text-[11px] focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setShowAddGitHubKeyForm(false)}
-                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={isSubmittingGitHubKey}
-                className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold cursor-pointer flex items-center gap-1.5"
-              >
-                {isSubmittingGitHubKey && <RefreshCw className="w-3 h-3 animate-spin" />}
-                <span>{isSubmittingGitHubKey ? 'Adding to GitHub...' : 'Add Key to GitHub'}</span>
-              </button>
-            </div>
-          </form>
-        )}
-
-        {/* Existing GitHub Keys List */}
-        {gitHubSshKeys.length === 0 ? (
-          <div className="p-4 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 flex flex-col items-center justify-center gap-2 text-center">
-            <span>
-              {gitHubUsernameFilter.trim()
-                ? `No public SSH keys found for @${gitHubUsernameFilter}.`
-                : 'No SSH keys loaded from GitHub. Click Add Key to register a public key or query an existing GitHub user.'}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setShowAddGitHubKeyForm(true);
-                handlePopulateSampleEd25519();
-              }}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center gap-1 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Your First Key</span>
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {gitHubSshKeys.map((item) => (
-              <div
-                key={item.id}
-                className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-2"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                      {item.title}
-                    </span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-                      {item.verified ? 'Verified' : 'Unverified'}
-                    </span>
-                    <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
-                        item.read_only
-                          ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400'
-                          : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
-                      }`}
-                    >
-                      {item.read_only ? 'Signing Key' : 'Authentication Key'}
-                    </span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-neutral-200 dark:bg-neutral-800 text-slate-600 dark:text-slate-400">
-                      ID #{item.id}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleCopyGitHubKey(item.key, item.id)}
-                      className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px] font-mono text-slate-700 dark:text-slate-300 hover:border-blue-500 flex items-center gap-1 cursor-pointer"
-                    >
-                      {copiedGitHubKeyId === item.id ? (
-                        <Check className="w-3 h-3 text-emerald-500" />
-                      ) : (
-                        <Copy className="w-3 h-3" />
-                      )}
-                      <span>{copiedGitHubKeyId === item.id ? 'Copied' : 'Copy Key'}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteGitHubSshKey(item.id)}
-                      title="Revoke SSH Key from GitHub"
-                      className="p-1 rounded border border-slate-300 dark:border-slate-700 text-slate-500 hover:text-red-500 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {item.fingerprint && (
-                  <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate">
-                    Fingerprint: {item.fingerprint}
-                  </div>
-                )}
-
-                <div className="text-[11px] font-mono text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-800 truncate">
-                  {item.key}
-                </div>
-
-                <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 pt-0.5">
-                  <span>
-                    Added: {item.created_at ? new Date(item.created_at).toLocaleDateString() : 'Active'}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-mono text-[11px] text-[#656d76] dark:text-[#8b949e]">
+                    fetch() Example
                   </span>
-                  {item.url && (
-                    <span className="font-mono truncate max-w-xs">{item.url}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(thirdPartyFetchSnippet);
+                      setCopiedEngineFetch(true);
+                      setTimeout(() => setCopiedEngineFetch(false), 2000);
+                    }}
+                    className="text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] flex items-center gap-1 cursor-pointer font-medium"
+                  >
+                    {copiedEngineFetch ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedEngineFetch ? 'Copied' : 'Copy'}</span>
+                  </button>
+                </div>
+                <pre className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] text-[11px] font-mono overflow-x-auto leading-relaxed">
+                  {thirdPartyFetchSnippet}
+                </pre>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
+                  Live Response
+                </div>
+                <div className="h-[155px] overflow-auto rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] p-3 font-mono text-[11px] text-emerald-700 dark:text-emerald-300">
+                  {engineCalloutOutput ? (
+                    <pre className="whitespace-pre-wrap">{engineCalloutOutput}</pre>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-[#656d76] dark:text-[#8b949e] text-center">
+                      Click Test Call to invoke /api/v1/engine/call.
+                    </div>
                   )}
                 </div>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* 4. Platform SDK Embed Snippets */}
-      <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 p-4 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Code2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-              SDK Snippets
-            </h2>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
-            {ENGINE_SDK_SPECS.map((sdk) => (
+          {/* SDK Snippets */}
+          <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#0d1117] p-4 sm:p-5 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Code2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  SDK Snippets
+                </h2>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                {ENGINE_SDK_SPECS.map((sdk) => (
+                  <button
+                    key={sdk.id}
+                    onClick={() => setSelectedSdkId(sdk.id)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                      selectedSdkId === sdk.id
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-[#f6f8fa] dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3]'
+                    }`}
+                  >
+                    {sdk.platformName}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-mono text-[#656d76] dark:text-[#8b949e]">
+                {activeSdk.platformName} · {activeSdk.language}
+              </span>
               <button
-                key={sdk.id}
-                onClick={() => setSelectedSdkId(sdk.id)}
-                className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                  selectedSdkId === sdk.id
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-                }`}
+                onClick={() => handleCopy(activeSdk.codeSnippet, 'snippet')}
+                className="px-2.5 py-1 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] rounded-md flex items-center gap-1 cursor-pointer"
               >
-                {sdk.platformName}
+                {copiedSnippet ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+                <span>{copiedSnippet ? 'Copied' : 'Copy'}</span>
               </button>
-            ))}
+            </div>
+
+            <div className="rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] p-3 overflow-x-auto">
+              <pre className="font-mono text-xs text-[#1f2328] dark:text-[#e6edf3] leading-relaxed">
+                {activeSdk.codeSnippet}
+              </pre>
+            </div>
+          </div>
+
+          {/* Interactive Endpoint Runner */}
+          <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#0d1117] p-4 sm:p-5 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                Endpoint Runner ({keyEnvironment.toUpperCase()})
+              </h2>
+              <button
+                onClick={handleExecuteEndpoint}
+                disabled={isExecuting}
+                className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md flex items-center gap-1.5 cursor-pointer self-start"
+              >
+                <Play className="w-3 h-3" />
+                <span>
+                  {isExecuting
+                    ? 'Running...'
+                    : `${activeEndpoint.method || 'POST'} ${activeEndpoint.path}`}
+                </span>
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {LIVE_ENDPOINTS.map((ep) => (
+                <button
+                  key={ep.id}
+                  onClick={() => {
+                    setSelectedEndpointId(ep.id);
+                    setRequestJson(JSON.stringify(ep.defaultBody, null, 2));
+                    setResponseJson('');
+                  }}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                    ep.id === selectedEndpointId
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-[#f6f8fa] dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3]'
+                  }`}
+                >
+                  {ep.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <textarea
+                value={requestJson}
+                onChange={(e) => setRequestJson(e.target.value)}
+                rows={6}
+                spellCheck={false}
+                className="w-full rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] p-2.5 font-mono text-xs text-[#1f2328] dark:text-[#e6edf3] focus:outline-none"
+              />
+              <div className="h-[146px] overflow-auto rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] p-2.5 font-mono text-xs text-emerald-700 dark:text-emerald-300">
+                {responseJson ? (
+                  <pre className="whitespace-pre-wrap">{responseJson}</pre>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-[#656d76] dark:text-[#8b949e] text-center text-xs">
+                    {activeEndpoint.method || 'POST'} {activeEndpoint.path}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
+      )}
 
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-mono text-slate-600 dark:text-slate-400">
-            {activeSdk.platformName} · {activeSdk.language}
-          </span>
-          <button
-            onClick={() => handleCopy(activeSdk.codeSnippet, 'snippet')}
-            className="px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-lg flex items-center gap-1 cursor-pointer"
-          >
-            {copiedSnippet ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-            <span>{copiedSnippet ? 'Copied' : 'Copy'}</span>
-          </button>
-        </div>
+      {/* =====================================================================
+          TAB 5: ASK NERVE SHARK (Embedded Integration Chatbox & Guide)
+      ===================================================================== */}
+      {activeIntegrationTab === 'shark' && (
+        <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] flex flex-col min-h-[540px] overflow-hidden">
+          <div className="px-4 py-3 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                  Nerve Shark · Integration Assistant
+                </h2>
+                <p className="text-[11px] text-[#656d76] dark:text-[#8b949e] truncate">
+                  Ask how to use API keys, SSH keys, webhooks, SDKs, or Vercel + Gemini deployment
+                </p>
+              </div>
+            </div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 p-3 overflow-x-auto">
-          <pre className="font-mono text-xs text-slate-800 dark:text-slate-200 leading-relaxed">
-            {activeSdk.codeSnippet}
-          </pre>
-        </div>
-      </div>
+            {integrationSharkMessages.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  handleCancelIntegrationShark();
+                  setIntegrationSharkMessages([]);
+                }}
+                className="px-2.5 py-1 text-xs font-medium text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] rounded-md cursor-pointer whitespace-nowrap"
+              >
+                Clear Chat
+              </button>
+            )}
+          </div>
 
-      {/* 5. Live REST & Webhook Endpoint Executor */}
-      <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 p-4 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <h2 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-            Endpoint Runner ({keyEnvironment.toUpperCase()})
-          </h2>
-          <button
-            onClick={handleExecuteEndpoint}
-            disabled={isExecuting}
-            className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1.5 cursor-pointer self-start"
-          >
-            <Play className="w-3 h-3" />
-            <span>
-              {isExecuting
-                ? 'Running...'
-                : `${activeEndpoint.method || 'POST'} ${activeEndpoint.path}`}
-            </span>
-          </button>
-        </div>
+          <div className="flex-1 p-4 sm:p-6 space-y-3.5 overflow-y-auto max-h-[460px]">
+            {integrationSharkMessages.length === 0 ? (
+              <div className="max-w-xl mx-auto py-8 space-y-5">
+                <div className="space-y-1.5">
+                  <h3 className="text-base font-bold text-[#1f2328] dark:text-[#e6edf3]">
+                    How can Nerve Shark help with your integration?
+                  </h3>
+                  <p className="text-xs sm:text-sm text-[#656d76] dark:text-[#8b949e] leading-relaxed">
+                    Ask plain-English questions about Live/Test API keys, SSH keys, GitHub webhooks, third-party engine callouts, or request ready-to-paste integration code.
+                  </p>
+                </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          {LIVE_ENDPOINTS.map((ep) => (
-            <button
-              key={ep.id}
-              onClick={() => {
-                setSelectedEndpointId(ep.id);
-                setRequestJson(JSON.stringify(ep.defaultBody, null, 2));
-                setResponseJson('');
-              }}
-              className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                ep.id === selectedEndpointId
-                  ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-800'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-              }`}
-            >
-              {ep.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <textarea
-            value={requestJson}
-            onChange={(e) => setRequestJson(e.target.value)}
-            rows={6}
-            spellCheck={false}
-            className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-2.5 font-mono text-xs text-slate-900 dark:text-slate-100 focus:outline-none"
-          />
-          <div className="h-[146px] overflow-auto rounded-xl border border-slate-300 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-2.5 font-mono text-xs text-emerald-700 dark:text-emerald-300">
-            {responseJson ? (
-              <pre className="whitespace-pre-wrap">{responseJson}</pre>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {[
+                    'How do I connect my app with a Live API key?',
+                    'How do I set up SSH keys for GitHub or GitLab?',
+                    'How do I verify my Vercel deployment and Gemini API?',
+                    'Show me a webhook payload for GitHub issues',
+                  ].map((starter) => (
+                    <button
+                      key={starter}
+                      type="button"
+                      onClick={() => void handleSendIntegrationShark(undefined, starter)}
+                      className="text-left px-3 py-2.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] hover:border-blue-500 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] transition-colors cursor-pointer"
+                    >
+                      {starter}
+                    </button>
+                  ))}
+                </div>
+              </div>
             ) : (
-              <div className="h-full flex items-center justify-center text-slate-500 dark:text-slate-400 text-center text-xs">
-                {activeEndpoint.method || 'POST'} {activeEndpoint.path}
+              integrationSharkMessages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`rounded-lg border p-3.5 space-y-2.5 max-w-2xl ${
+                    msg.role === 'user'
+                      ? 'ml-auto border-blue-200 dark:border-blue-900/60 bg-blue-50/60 dark:bg-[#13233a]'
+                      : 'border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-xs text-[#656d76] dark:text-[#8b949e]">
+                    <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5">
+                      {msg.role === 'assistant' && (
+                        <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                      )}
+                      <span>{msg.role === 'assistant' ? 'Nerve Shark' : 'You'}</span>
+                    </span>
+                    <span className="font-mono text-[11px]">{msg.timestamp}</span>
+                  </div>
+
+                  <p className="text-xs sm:text-sm text-[#1f2328] dark:text-[#e6edf3] leading-relaxed whitespace-pre-wrap">
+                    {msg.text}
+                  </p>
+
+                  {msg.suggestedPatch && (
+                    <pre className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-xs font-mono text-emerald-700 dark:text-emerald-400 overflow-x-auto leading-relaxed">
+                      {msg.suggestedPatch}
+                    </pre>
+                  )}
+
+                  {msg.role === 'assistant' &&
+                    msg.suggestedFollowUps &&
+                    msg.suggestedFollowUps.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                        {msg.suggestedFollowUps.map((followUp) => (
+                          <button
+                            key={followUp}
+                            type="button"
+                            disabled={isIntegrationSharkThinking}
+                            onClick={() => void handleSendIntegrationShark(undefined, followUp)}
+                            className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            {followUp}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                </div>
+              ))
+            )}
+
+            {isIntegrationSharkThinking && (
+              <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] p-3.5 max-w-md flex items-center justify-between gap-3 text-xs text-[#656d76] dark:text-[#8b949e]">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 dark:text-blue-400" />
+                  <span>Nerve Shark is thinking...</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCancelIntegrationShark}
+                  className="text-red-600 dark:text-red-400 hover:underline font-medium cursor-pointer"
+                >
+                  Cancel
+                </button>
               </div>
             )}
           </div>
+
+          <form
+            onSubmit={(e) => void handleSendIntegrationShark(e)}
+            className="p-3.5 border-t border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex items-center gap-2"
+          >
+            <input
+              type="text"
+              value={integrationSharkInput}
+              onChange={(e) => setIntegrationSharkInput(e.target.value)}
+              placeholder="Ask Nerve Shark about API keys, SSH keys, webhooks, or SDKs... (/clear to reset)"
+              className="flex-1 px-3.5 py-2 text-xs sm:text-sm rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            {isIntegrationSharkThinking ? (
+              <button
+                type="button"
+                onClick={handleCancelIntegrationShark}
+                className="px-3.5 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Cancel</span>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!integrationSharkInput.trim()}
+                className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Ask</span>
+              </button>
+            )}
+          </form>
         </div>
-      </div>
+      )}
     </div>
   );
 };

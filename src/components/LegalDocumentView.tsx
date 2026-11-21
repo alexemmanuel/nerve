@@ -142,14 +142,14 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
   const sections = isPrivacy ? PRIVACY_SECTIONS : TERMS_SECTIONS;
 
   return (
-    <main className="flex-1 bg-white dark:bg-black text-black dark:text-white">
+    <main className="flex-1 bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3]">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 space-y-8">
         {/* Top Breadcrumb / Action Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-4 pb-6 border-b border-neutral-200 dark:border-neutral-800">
+        <div className="flex flex-wrap items-center justify-between gap-4 pb-6 border-b border-[#d0d7de] dark:border-[#30363d]">
           <button
             type="button"
             onClick={onBackToWorkspace}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 text-xs font-medium text-black dark:text-white cursor-pointer transition-colors whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] cursor-pointer transition-colors whitespace-nowrap shrink-0"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Back to Workspace</span>
@@ -159,17 +159,17 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
           <div
             role="tablist"
             aria-label="Legal documents"
-            className="inline-flex items-center gap-1 p-1 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800"
+            className="inline-flex items-center gap-1 p-1 rounded-md bg-[#f6f8fa] dark:bg-[#161b22] border border-[#d0d7de] dark:border-[#30363d]"
           >
             <button
               type="button"
               role="tab"
               aria-selected={isPrivacy}
               onClick={() => onSwitchPage('privacy')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                 isPrivacy
-                  ? 'bg-white dark:bg-black text-black dark:text-white shadow-xs'
-                  : 'text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white'
+                  ? 'bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] shadow-xs'
+                  : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
               }`}
             >
               <Shield className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
@@ -180,21 +180,21 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
               role="tab"
               aria-selected={!isPrivacy}
               onClick={() => onSwitchPage('terms')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                 !isPrivacy
-                  ? 'bg-white dark:bg-black text-black dark:text-white shadow-xs'
-                  : 'text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white'
+                  ? 'bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] shadow-xs'
+                  : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
               }`}
             >
               <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-              <span>Terms & Conditions</span>
+              <span>Terms &amp; Conditions</span>
             </button>
           </div>
         </div>
 
         {/* Document Header */}
         <header className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400 font-mono">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[#656d76] dark:text-[#8b949e] font-mono">
             <span>Nerve Platform</span>
             <span aria-hidden="true">·</span>
             <span>Effective November 16, 2026</span>
@@ -202,11 +202,11 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
             <span>nerve-tz8t.vercel.app</span>
           </div>
 
-          <h1 className="text-2xl sm:text-4xl font-bold tracking-tight text-black dark:text-white text-balance">
+          <h1 className="text-2xl sm:text-4xl font-bold tracking-tight text-[#1f2328] dark:text-[#e6edf3] text-balance">
             {isPrivacy ? 'Privacy Policy' : 'Terms & Conditions'}
           </h1>
 
-          <p className="text-sm sm:text-base text-neutral-600 dark:text-neutral-300 leading-relaxed max-w-[68ch]">
+          <p className="text-sm sm:text-base text-[#656d76] dark:text-[#8b949e] leading-relaxed max-w-[68ch]">
             {isPrivacy
               ? 'How Nerve handles authentication, Google Workspace verification scopes, end-to-end encrypted peer messaging, and locally cached developer workspace data.'
               : 'Rules, account responsibilities, acceptable integration use, and service terms governing your use of the Nerve developer work surface and API.'}
@@ -216,9 +216,9 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
         {/* Quick Section Index */}
         <nav
           aria-label="Document sections"
-          className="p-4 sm:p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/70 dark:bg-neutral-950 space-y-2.5"
+          className="p-4 sm:p-5 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2.5"
         >
-          <div className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
+          <div className="text-xs font-semibold text-[#656d76] dark:text-[#8b949e]">
             Contents
           </div>
           <ol className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
@@ -226,7 +226,7 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
               <li key={section.id}>
                 <a
                   href={`#${section.id}`}
-                  className="text-neutral-700 dark:text-neutral-300 hover:text-blue-600 dark:hover:text-blue-400 hover:underline transition-colors"
+                  className="text-[#1f2328] dark:text-[#e6edf3] hover:text-blue-600 dark:hover:text-blue-400 hover:underline transition-colors"
                 >
                   {section.heading}
                 </a>
@@ -236,10 +236,10 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
         </nav>
 
         {/* Document Sections */}
-        <div className="divide-y divide-neutral-200 dark:divide-neutral-800 border-t border-b border-neutral-200 dark:border-neutral-800">
+        <div className="divide-y divide-[#d0d7de] dark:divide-[#30363d] border-t border-b border-[#d0d7de] dark:border-[#30363d]">
           {sections.map((section) => (
             <section key={section.id} id={section.id} className="py-7 space-y-3 scroll-mt-20">
-              <h2 className="text-base sm:text-lg font-semibold text-black dark:text-white tracking-tight">
+              <h2 className="text-base sm:text-lg font-semibold text-[#1f2328] dark:text-[#e6edf3] tracking-tight">
                 {section.heading}
               </h2>
 
@@ -247,14 +247,14 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
                 {section.paragraphs.map((paragraph, idx) => (
                   <p
                     key={idx}
-                    className="text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed"
+                    className="text-sm text-[#1f2328]/85 dark:text-[#e6edf3]/85 leading-relaxed"
                   >
                     {paragraph}
                   </p>
                 ))}
 
                 {section.bullets && section.bullets.length > 0 && (
-                  <ul className="list-disc pl-5 space-y-2 text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">
+                  <ul className="list-disc pl-5 space-y-2 text-sm text-[#1f2328]/85 dark:text-[#e6edf3]/85 leading-relaxed">
                     {section.bullets.map((bullet, idx) => (
                       <li key={idx}>{bullet}</li>
                     ))}
@@ -266,7 +266,7 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
         </div>
 
         {/* Bottom Cross-Link & Contact */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2 text-xs text-neutral-600 dark:text-neutral-400">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2 text-xs text-[#656d76] dark:text-[#8b949e]">
           <div>
             Questions or data requests:{' '}
             <a
@@ -281,14 +281,14 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
             <button
               type="button"
               onClick={() => onSwitchPage(isPrivacy ? 'terms' : 'privacy')}
-              className="font-medium text-black dark:text-white hover:text-blue-600 dark:hover:text-blue-400 underline underline-offset-4 cursor-pointer whitespace-nowrap shrink-0"
+              className="font-medium text-[#1f2328] dark:text-[#e6edf3] hover:text-blue-600 dark:hover:text-blue-400 underline underline-offset-4 cursor-pointer whitespace-nowrap shrink-0"
             >
               {isPrivacy ? 'Read Terms & Conditions' : 'Read Privacy Policy'}
             </button>
             <button
               type="button"
               onClick={onBackToWorkspace}
-              className="font-medium text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white cursor-pointer whitespace-nowrap shrink-0"
+              className="font-medium text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer whitespace-nowrap shrink-0"
             >
               Return to App
             </button>

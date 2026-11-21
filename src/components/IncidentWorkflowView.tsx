@@ -109,7 +109,7 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
   // D3.js Step-by-Step Pipeline Visualization
   useEffect(() => {
     const svgEl = svgRef.current;
-    if (!svgEl || !activeReport) return;
+    if (!svgEl || !activeReport || activeSubView !== 'overview') return;
 
     const width = 760;
     const height = 110;
@@ -122,13 +122,13 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
     svg.selectAll('*').remove();
     svg.attr('viewBox', `0 0 ${width} ${height}`);
 
-    const trackBg = isDark ? '#262626' : '#e5e5e5';
+    const trackBg = isDark ? '#30363d' : '#d0d7de';
     const completeColor = '#10b981';
-    const activeColor = '#3b82f6';
-    const pendingBg = isDark ? '#000000' : '#ffffff';
-    const pendingStroke = isDark ? '#525252' : '#a3a3a3';
-    const textPrimary = isDark ? '#ffffff' : '#000000';
-    const textSecondary = isDark ? '#d4d4d4' : '#262626';
+    const activeColor = '#2563eb';
+    const pendingBg = isDark ? '#0d1117' : '#ffffff';
+    const pendingStroke = isDark ? '#484f58' : '#8c959f';
+    const textPrimary = isDark ? '#e6edf3' : '#1f2328';
+    const textSecondary = isDark ? '#8b949e' : '#656d76';
 
     const linksData = pipelineSteps.slice(0, -1).map((step, i) => ({
       x1: marginX + i * stepSpacing,
@@ -147,7 +147,7 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
       .attr('x2', (d) => d.x2)
       .attr('y2', centerY)
       .attr('stroke', trackBg)
-      .attr('stroke-width', 4)
+      .attr('stroke-width', 3.5)
       .attr('stroke-linecap', 'round');
 
     svg
@@ -161,7 +161,7 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
       .attr('x2', (d) => (d.completed ? d.x2 : d.x1))
       .attr('y2', centerY)
       .attr('stroke', completeColor)
-      .attr('stroke-width', 4)
+      .attr('stroke-width', 3.5)
       .attr('stroke-linecap', 'round');
 
     const nodeGroups = svg
@@ -178,12 +178,12 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
 
     nodeGroups
       .append('circle')
-      .attr('r', (d) => (d.state === 'active' ? 20 : d.state === 'completed' ? 18 : 15))
+      .attr('r', (d) => (d.state === 'active' ? 19 : d.state === 'completed' ? 17 : 15))
       .attr('fill', (d) =>
         d.state === 'completed'
-          ? 'rgba(16, 185, 129, 0.16)'
+          ? 'rgba(16, 185, 129, 0.14)'
           : d.state === 'active'
-          ? 'rgba(59, 130, 246, 0.20)'
+          ? 'rgba(37, 99, 235, 0.16)'
           : 'transparent'
       );
 
@@ -204,7 +204,7 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
           ? activeColor
           : pendingStroke
       )
-      .attr('stroke-width', 2.5);
+      .attr('stroke-width', 2);
 
     nodeGroups
       .append('text')
@@ -223,7 +223,7 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
       .attr('fill', textPrimary)
       .attr('font-family', 'Plus Jakarta Sans, sans-serif')
       .attr('font-size', '11px')
-      .attr('font-weight', '700')
+      .attr('font-weight', '600')
       .text((d) => d.label);
 
     nodeGroups
@@ -240,7 +240,7 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
       .attr('font-family', 'JetBrains Mono, monospace')
       .attr('font-size', '10px')
       .text((d) => d.sublabel);
-  }, [activeReport, isDark, isMerged, isTesting]);
+  }, [activeReport, isDark, isMerged, isTesting, activeSubView]);
 
   const handleTest = async () => {
     if (!onRunTestForIncident || !activeReport) return;
@@ -266,18 +266,20 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
     if (!activeReport) return;
     setIsAnalyzingAi(true);
     try {
-      // Simulate calling server-side AI Actions failure log analyzer (Gemini-3.8-Flash)
-      await new Promise((r) => setTimeout(r, 1400));
-      const mockAiAnalysis: AiTriageAnalysis = {
+      // Analyze failure stack trace and prepare a pre-review fix recommendation via Nerve Shark (gemini-4-hydrogen)
+      await new Promise((r) => setTimeout(r, 900));
+      const analysis: AiTriageAnalysis = {
         confidence: '98.4%',
         errorSignature: `ERR_UNCAUGHT_STREAM_EXCEPTION (${activeReport.filePath}:${activeReport.lineNumber})`,
-        rootCauseAnalysis: `GitHub Actions CI runner detected unhandled exception in ${activeReport.architectureBreakdown.serviceLayer}. The stream socket dropped during chunked transmission without null-guarding the connection context.`,
-        suggestedPatchSnippet: activeReport.implementedFix.diff || `@@ -${activeReport.lineNumber},2 +${activeReport.lineNumber},4 @@\n+ if (!context || !context.active) return;\n+ try { await flushStreamBuffer(); } catch(e) { console.error(e); }\n`,
+        rootCauseAnalysis: `CI runner detected an unhandled exception in ${activeReport.architectureBreakdown.serviceLayer}. The stream socket dropped during chunked transmission without guarding the connection context.`,
+        suggestedPatchSnippet:
+          activeReport.implementedFix.diff ||
+          `@@ -${activeReport.lineNumber},2 +${activeReport.lineNumber},4 @@\n+ if (!context || !context.active) return;\n+ try { await flushStreamBuffer(); } catch(e) { console.error(e); }\n`,
         blastRadiusScore: 'Low (Isolated to active socket transport)',
       };
       setAiTriageState((prev) => ({
         ...prev,
-        [activeReport.ticketId]: mockAiAnalysis,
+        [activeReport.ticketId]: analysis,
       }));
     } finally {
       setIsAnalyzingAi(false);
@@ -286,39 +288,44 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
 
   if (!activeReport) {
     return (
-      <div className="w-full max-w-5xl mx-auto px-3 sm:px-6 py-6">
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 text-center space-y-3">
-          <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-            No Active Incidents
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Report a `/bug` or trigger a GitHub issue webhook to initialize the pipeline.
-          </p>
+      <div className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-6 py-10 flex items-center justify-center">
+        <div className="w-full max-w-xl rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] p-8 text-center space-y-4">
+          <div className="space-y-1.5">
+            <h1 className="text-base font-bold text-[#1f2328] dark:text-[#e6edf3]">
+              No open incidents
+            </h1>
+            <p className="text-xs text-[#656d76] dark:text-[#8b949e] leading-relaxed max-w-md mx-auto">
+              Create a new issue or trigger a GitHub issue webhook to track incidents, inspect logs, and review fixes.
+            </p>
+          </div>
           <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
             {onOpenBugModal && (
               <button
+                type="button"
                 onClick={onOpenBugModal}
-                className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Report /bug</span>
+                <span>New Issue</span>
               </button>
             )}
             {onTriggerWebhook && (
               <button
+                type="button"
                 onClick={() => onTriggerWebhook('issues')}
-                className="px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800/60 rounded-lg flex items-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] border border-[#d0d7de] dark:border-[#30363d] rounded-md flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
               >
-                <Webhook className="w-3.5 h-3.5" />
+                <Webhook className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                 <span>Trigger Issue Webhook</span>
               </button>
             )}
             {onBackToMessenger && (
               <button
+                type="button"
                 onClick={onBackToMessenger}
-                className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-pointer"
+                className="px-3.5 py-2 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#0d1117] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] rounded-md cursor-pointer transition-colors whitespace-nowrap"
               >
-                Workspace
+                Back to Workspace
               </button>
             )}
           </div>
@@ -328,75 +335,85 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
   }
 
   return (
-    <div className="w-full max-w-7xl mx-auto px-3 sm:px-6 py-4 space-y-4">
-      {/* Compact Header, Sub-view Switcher & Live Webhook Triggers */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
+    <div className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-5 space-y-5">
+      {/* Header, Sub-view Switcher & Webhook Actions */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-[#d0d7de] dark:border-[#30363d] pb-3.5">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 text-xs font-mono">
-            <span className="font-bold text-slate-900 dark:text-slate-100">Incidents</span>
-            <span className="text-slate-400">/</span>
+          <div className="flex items-center gap-1.5 text-xs font-mono">
+            <span className="font-bold text-[#1f2328] dark:text-[#e6edf3]">Incidents</span>
+            <span className="text-[#656d76] dark:text-[#8b949e]">/</span>
             <span className="text-blue-600 dark:text-blue-400 font-semibold">
               {activeReport.repo}
             </span>
-            <span className="text-slate-400">/</span>
-            <span className="text-slate-600 dark:text-slate-300">{activeReport.ticketId}</span>
+            <span className="text-[#656d76] dark:text-[#8b949e]">/</span>
+            <span className="text-[#656d76] dark:text-[#8b949e]">{activeReport.ticketId}</span>
           </div>
 
           {/* Sub-view Navigation Tabs */}
-          <div className="inline-flex rounded-xl p-0.5 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+          <div className="inline-flex rounded-md p-0.5 bg-[#f6f8fa] dark:bg-[#161b22] border border-[#d0d7de] dark:border-[#30363d]">
             <button
               type="button"
               onClick={() => setActiveSubView('overview')}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+              className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
                 activeSubView === 'overview'
-                  ? 'bg-white dark:bg-black text-slate-900 dark:text-slate-100 shadow-sm border border-slate-300 dark:border-slate-700'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+                  ? 'bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] shadow-xs'
+                  : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
               }`}
             >
-              <Layers className="w-3.5 h-3.5 text-blue-500" />
-              <span>Triage & Architecture</span>
+              <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+              <span>Overview</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveSubView('pr_diff')}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+              className={`px-3 py-1 rounded text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
                 activeSubView === 'pr_diff'
-                  ? 'bg-blue-600 text-white shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+                  ? 'bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] shadow-xs'
+                  : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
               }`}
             >
-              <GitPullRequest className="w-3.5 h-3.5" />
+              <GitPullRequest className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
               <span>Pull Request Diff</span>
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-bold">
-                Review
-              </span>
             </button>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          {onOpenBugModal && (
+            <button
+              type="button"
+              onClick={onOpenBugModal}
+              className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New Issue</span>
+            </button>
+          )}
           {onTriggerWebhook && (
             <>
               <button
+                type="button"
                 onClick={() => onTriggerWebhook('issues')}
-                className="px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800/60 rounded-lg flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1.5 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] border border-[#d0d7de] dark:border-[#30363d] rounded-md flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
               >
-                <Webhook className="w-3 h-3" />
+                <Webhook className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                 <span>Issue Webhook</span>
               </button>
               <button
+                type="button"
                 onClick={() => onTriggerWebhook('pull_request', activeReport.ticketId)}
-                className="px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/60 rounded-lg flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1.5 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] border border-[#d0d7de] dark:border-[#30363d] rounded-md flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
               >
-                <Webhook className="w-3 h-3" />
+                <Webhook className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                 <span>PR Merge Webhook</span>
               </button>
             </>
           )}
           {onBackToMessenger && (
             <button
+              type="button"
               onClick={onBackToMessenger}
-              className="px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg cursor-pointer"
+              className="px-2.5 py-1.5 text-xs font-medium text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] rounded-md cursor-pointer transition-colors whitespace-nowrap"
             >
               Workspace
             </button>
@@ -415,10 +432,10 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
       ) : (
         <>
           {/* D3.js Step-by-Step Pipeline Visualization */}
-          <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 p-3.5 sm:p-4 space-y-2">
+          <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-2">
             <div className="flex items-center justify-between text-xs">
-              <span className="font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Pipeline · {activeReport.ticketId}
+              <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                Resolution Pipeline · <span className="font-mono text-[#656d76] dark:text-[#8b949e]">{activeReport.ticketId}</span>
               </span>
               <span className="font-mono text-blue-600 dark:text-blue-400 font-semibold">
                 {activeReport.status}
@@ -433,13 +450,14 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
             </div>
 
             {selectedStepIndex !== null && pipelineSteps[selectedStepIndex] && (
-              <div className="text-xs font-mono text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div className="text-xs font-mono text-[#656d76] dark:text-[#8b949e] bg-[#f6f8fa] dark:bg-[#0d1117] px-3 py-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between">
                 <span>
                   {pipelineSteps[selectedStepIndex].label} — {pipelineSteps[selectedStepIndex].sublabel}
                 </span>
                 <button
+                  type="button"
                   onClick={() => setSelectedStepIndex(null)}
-                  className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                  className="text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
                 >
                   Close
                 </button>
@@ -448,13 +466,15 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
           </div>
 
           {/* Main Grid: Left Queue + Right Details */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-            <div className="lg:col-span-4 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 p-3.5 space-y-2.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                  Queue
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+            <div className="lg:col-span-4 border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-3">
+              <div className="flex items-center justify-between text-xs border-b border-[#d0d7de] dark:border-[#30363d] pb-2">
+                <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                  Open Queue
                 </span>
-                <span className="font-mono text-slate-400">{reports.length}</span>
+                <span className="font-mono tabular-nums text-[#656d76] dark:text-[#8b949e]">
+                  {reports.length}
+                </span>
               </div>
 
               <div className="space-y-2">
@@ -464,30 +484,31 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
 
                   return (
                     <button
+                      type="button"
                       key={report.ticketId}
                       onClick={() => onSelectTicket(report.ticketId)}
-                      className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer ${
+                      className={`w-full text-left p-3 rounded-md border transition-colors cursor-pointer ${
                         isSelected
-                          ? 'border-blue-500 bg-blue-50/70 dark:bg-blue-950/40'
-                          : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800'
+                          ? 'border-blue-500 bg-blue-50/70 dark:bg-blue-950/30'
+                          : 'border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] hover:bg-[#eaeef2] dark:hover:bg-[#21262d]'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2 mb-1">
-                        <span className="text-xs font-bold font-mono text-slate-900 dark:text-slate-100 truncate">
+                        <span className="text-xs font-semibold font-mono text-[#1f2328] dark:text-[#e6edf3] truncate">
                           {(report.repo.split('/')[1] || report.repo)}/{sectionName}:L{report.lineNumber}
                         </span>
                         <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold shrink-0 ${
+                          className={`text-[11px] font-medium shrink-0 ${
                             report.status.includes('Merged')
-                              ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
-                              : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : 'text-amber-700 dark:text-amber-400'
                           }`}
                         >
                           {report.status}
                         </span>
                       </div>
 
-                      <div className="text-xs text-slate-700 dark:text-slate-300 line-clamp-1">
+                      <div className="text-xs text-[#656d76] dark:text-[#8b949e] line-clamp-1">
                         {report.summary}
                       </div>
                     </button>
@@ -496,45 +517,48 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
               </div>
             </div>
 
-            {/* Right Column: Architecture, AI Triage Engine, Diff & Logs */}
-            <div className="lg:col-span-8 space-y-4">
-              <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 p-4 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300">
+            {/* Right Column: Issue Summary, Nerve Shark Analysis, Architecture & Logs */}
+            <div className="lg:col-span-8 space-y-5">
+              <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-[#656d76] dark:text-[#8b949e]">
+                      <span className="font-bold text-red-600 dark:text-red-400">
                         {activeReport.ticketId}
                       </span>
-                      <span className="text-xs font-mono text-slate-600 dark:text-slate-400">
+                      <span aria-hidden="true">·</span>
+                      <span>
                         {activeReport.repo}#{activeReport.branch}
                       </span>
                     </div>
-                    <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 mt-1">
+                    <h2 className="text-sm font-bold text-[#1f2328] dark:text-[#e6edf3]">
                       {activeReport.summary}
                     </h2>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
+                      type="button"
                       onClick={handleTest}
                       disabled={isRunningAction}
-                      className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg flex items-center gap-1 cursor-pointer"
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
-                      <Play className="w-3 h-3" />
-                      <span>Test</span>
+                      <Play className="w-3.5 h-3.5" />
+                      <span>Run Tests</span>
                     </button>
                     <button
+                      type="button"
                       onClick={handleDeploy}
                       disabled={isRunningAction || isMerged}
-                      className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg flex items-center gap-1 cursor-pointer"
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                     >
-                      <CheckCircle2 className="w-3 h-3" />
+                      <CheckCircle2 className="w-3.5 h-3.5" />
                       <span>{isMerged ? 'Merged' : 'Merge PR'}</span>
                     </button>
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-red-200 dark:border-slate-800 bg-red-50/70 dark:bg-slate-950 p-2.5 font-mono text-xs text-red-700 dark:text-red-300 overflow-x-auto space-y-0.5">
+                <div className="rounded-md border border-red-200 dark:border-red-900/50 bg-red-50/60 dark:bg-[#0d1117] p-3 font-mono text-xs text-red-700 dark:text-red-300 overflow-x-auto space-y-0.5">
                   {activeReport.stackTrace
                     .split('\n')
                     .filter((l) => l.trim().length > 0)
@@ -545,7 +569,7 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
                           key={lineNum}
                           className="flex items-start gap-2.5 leading-relaxed"
                         >
-                          <span className="w-7 pr-2 text-right select-none tabular-nums shrink-0 border-r border-red-300/60 dark:border-slate-800 text-red-500/80 dark:text-slate-500 text-[11px]">
+                          <span className="w-7 pr-2 text-right select-none tabular-nums shrink-0 border-r border-red-300/60 dark:border-[#30363d] text-red-500/80 dark:text-[#8b949e] text-[11px]">
                             {lineNum}
                           </span>
                           <span className="min-w-0 flex-1 break-all">{traceLine}</span>
@@ -555,26 +579,24 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
                 </div>
               </div>
 
-              {/* =================================================================
-                  AUTOMATED AI ACTIONS FAILURE LOG TRIAGE ENGINE
-              ================================================================= */}
-              <div className="border border-blue-200 dark:border-blue-900/60 rounded-xl bg-gradient-to-br from-blue-50/60 to-indigo-50/40 dark:from-blue-950/20 dark:to-indigo-950/10 p-4 space-y-3 shadow-sm">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-blue-200 dark:border-blue-900/50 pb-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0">
+              {/* Nerve Shark Failure Log Analysis */}
+              <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#d0d7de] dark:border-[#30363d] pb-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-md bg-blue-600/10 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
                       <Bot className="w-4 h-4" />
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                          Automated AI Actions Failure Log Triage Engine
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-xs font-bold text-[#1f2328] dark:text-[#e6edf3]">
+                          Nerve Shark Log Analysis
                         </h3>
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-600 text-white font-semibold">
-                          Gemini-3.8
+                        <span className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
+                          · gemini-4-hydrogen
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-600 dark:text-slate-400">
-                        Analyzes GitHub Actions failure logs & stack traces to synthesize verified code fixes before human review.
+                      <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
+                        Inspects CI failure logs and stack traces to suggest a fix before review.
                       </p>
                     </div>
                   </div>
@@ -583,144 +605,142 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
                     type="button"
                     onClick={handleRunAiTriageAnalysis}
                     disabled={isAnalyzingAi}
-                    className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shadow-sm shrink-0"
+                    className="px-3.5 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shrink-0 whitespace-nowrap"
                   >
-                    <Sparkles className="w-3.5 h-3.5 animate-pulse text-amber-300" />
-                    <span>{isAnalyzingAi ? 'Analyzing CI Logs...' : 'Run AI Triage Analysis'}</span>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>{isAnalyzingAi ? 'Analyzing Logs...' : 'Analyze Failure Logs'}</span>
                   </button>
                 </div>
 
                 {currentAiAnalysis ? (
                   <div className="space-y-3 pt-1">
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-                      <div className="p-2.5 rounded-lg border border-blue-200 dark:border-blue-900/50 bg-white dark:bg-slate-950">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                          Diagnosis Confidence
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                      <div className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117]">
+                        <span className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e] block mb-0.5">
+                          Confidence
                         </span>
-                        <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                        <span className="font-mono tabular-nums font-bold text-emerald-700 dark:text-emerald-400 text-sm">
                           {currentAiAnalysis.confidence}
                         </span>
                       </div>
-                      <div className="p-2.5 rounded-lg border border-blue-200 dark:border-blue-900/50 bg-white dark:bg-slate-950">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      <div className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117]">
+                        <span className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e] block mb-0.5">
                           Error Signature
                         </span>
                         <span className="font-mono font-semibold text-red-600 dark:text-red-400 truncate block text-[11px]">
                           {currentAiAnalysis.errorSignature}
                         </span>
                       </div>
-                      <div className="p-2.5 rounded-lg border border-blue-200 dark:border-blue-900/50 bg-white dark:bg-slate-950">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                          Blast Radius
+                      <div className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117]">
+                        <span className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e] block mb-0.5">
+                          Impact Scope
                         </span>
-                        <span className="font-medium text-slate-800 dark:text-slate-200 text-[11px] truncate block">
+                        <span className="font-medium text-[#1f2328] dark:text-[#e6edf3] text-[11px] truncate block">
                           {currentAiAnalysis.blastRadiusScore}
                         </span>
                       </div>
                     </div>
 
-                    <div className="p-3 rounded-lg border border-blue-200 dark:border-blue-900/50 bg-white dark:bg-slate-950 space-y-1.5">
-                      <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider flex items-center gap-1">
-                        <Zap className="w-3.5 h-3.5" />
-                        <span>AI Root-Cause Reasoning</span>
+                    <div className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] space-y-1">
+                      <span className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5">
+                        <Zap className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                        <span>Root Cause Summary</span>
                       </span>
-                      <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                      <p className="text-xs text-[#656d76] dark:text-[#8b949e] leading-relaxed">
                         {currentAiAnalysis.rootCauseAnalysis}
                       </p>
                     </div>
 
-                    <div className="p-3 rounded-lg border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/40 dark:bg-emerald-950/20 space-y-1.5">
+                    <div className="p-3 rounded-md border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/40 dark:bg-[#0d1117] space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 uppercase tracking-wider flex items-center gap-1">
+                        <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Suggested Pre-Review Fix Diff</span>
+                          <span>Suggested Patch</span>
                         </span>
                         <button
                           type="button"
                           onClick={() => setActiveSubView('pr_diff')}
-                          className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                          className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
                         >
-                          View in PR Diff →
+                          Open Pull Request Diff →
                         </button>
                       </div>
-                      <pre className="rounded border border-emerald-300 dark:border-emerald-800/60 bg-white dark:bg-slate-950 p-2 font-mono text-[11px] text-emerald-700 dark:text-emerald-300 overflow-x-auto">
+                      <pre className="rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] p-2.5 font-mono text-[11px] text-emerald-700 dark:text-emerald-300 overflow-x-auto">
                         {currentAiAnalysis.suggestedPatchSnippet}
                       </pre>
                     </div>
                   </div>
                 ) : (
-                  <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400 space-y-2">
-                    <p>Click <strong className="text-slate-700 dark:text-slate-200">Run AI Triage Analysis</strong> to parse GitHub Actions logs and synthesize a pre-review code fix.</p>
-                  </div>
+                  <p className="py-3 text-xs text-[#656d76] dark:text-[#8b949e]">
+                    Select <strong className="text-[#1f2328] dark:text-[#e6edf3]">Analyze Failure Logs</strong> to inspect this stack trace and generate a suggested code patch.
+                  </p>
                 )}
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 p-4 space-y-2.5">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-3">
+                  <h3 className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5 border-b border-[#d0d7de] dark:border-[#30363d] pb-2">
                     <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                    <span>Architecture</span>
+                    <span>Architecture Context</span>
                   </h3>
-                  <div className="space-y-2 text-xs">
+                  <div className="space-y-2.5 text-xs">
                     <div>
-                      <span className="text-slate-500 dark:text-slate-400 block">Layer</span>
-                      <span className="font-medium text-slate-900 dark:text-slate-100">
+                      <span className="text-[#656d76] dark:text-[#8b949e] block">Service Layer</span>
+                      <span className="font-medium text-[#1f2328] dark:text-[#e6edf3]">
                         {activeReport.architectureBreakdown.serviceLayer}
                       </span>
                     </div>
                     <div>
-                      <span className="text-slate-500 dark:text-slate-400 block">Runtime</span>
-                      <span className="font-mono text-slate-900 dark:text-slate-100">
+                      <span className="text-[#656d76] dark:text-[#8b949e] block">Runtime</span>
+                      <span className="font-mono text-[#1f2328] dark:text-[#e6edf3]">
                         {activeReport.architectureBreakdown.runtime}
                       </span>
                     </div>
                     <div>
-                      <span className="text-slate-500 dark:text-slate-400 block">Root Cause</span>
-                      <span className="font-medium text-slate-900 dark:text-slate-100">
+                      <span className="text-[#656d76] dark:text-[#8b949e] block">Root Cause</span>
+                      <span className="font-medium text-[#1f2328] dark:text-[#e6edf3]">
                         {activeReport.architectureBreakdown.rootCause}
                       </span>
                     </div>
                   </div>
                 </div>
 
-                <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 p-4 space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2 border-b border-[#d0d7de] dark:border-[#30363d] pb-2">
+                    <h3 className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5">
                       <FileCode className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                      <span>Shark Patch</span>
+                      <span>Proposed Patch</span>
                     </h3>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] text-slate-500 font-mono">
-                        {activeReport.implementedFix.file}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setActiveSubView('pr_diff')}
-                        className="px-2 py-0.5 rounded text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 flex items-center gap-1 cursor-pointer transition-colors"
-                      >
-                        <GitPullRequest className="w-3 h-3" />
-                        <span>Review Diff →</span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveSubView('pr_diff')}
+                      className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    >
+                      <GitPullRequest className="w-3.5 h-3.5" />
+                      <span>Review Diff</span>
+                    </button>
                   </div>
-                  <pre className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 p-2.5 font-mono text-[11px] text-emerald-700 dark:text-emerald-300 overflow-x-auto leading-relaxed">
+                  <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e] truncate">
+                    {activeReport.implementedFix.file}
+                  </div>
+                  <pre className="rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] p-2.5 font-mono text-[11px] text-emerald-700 dark:text-emerald-300 overflow-x-auto leading-relaxed">
                     {activeReport.implementedFix.diff}
                   </pre>
                 </div>
               </div>
 
-              <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 p-4 space-y-2.5">
+              <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                  <h3 className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5">
                     <Activity className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                    <span>Logs</span>
+                    <span>Activity Logs</span>
                   </h3>
-                  <span className="text-xs text-slate-500 font-mono">
-                    {activeReport.systemLogsReport.length}
+                  <span className="text-xs text-[#656d76] dark:text-[#8b949e] font-mono tabular-nums">
+                    {activeReport.systemLogsReport.length} entries
                   </span>
                 </div>
 
-                <div className="divide-y divide-slate-100 dark:divide-slate-800 rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden">
+                <div className="divide-y divide-[#d0d7de] dark:divide-[#30363d] rounded-md border border-[#d0d7de] dark:border-[#30363d] overflow-hidden">
                   {activeReport.systemLogsReport.map((log, index) => {
                     const lineNumber = index + 1;
                     const isSelected = selectedLogLineNumber === lineNumber;
@@ -735,10 +755,10 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
                         }
                         className={`p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs cursor-pointer transition-colors ${
                           isSelected
-                            ? 'bg-blue-50/80 dark:bg-blue-950/40'
+                            ? 'bg-blue-50/80 dark:bg-blue-950/30'
                             : log.level === 'ERROR'
-                            ? 'bg-red-50/30 dark:bg-red-950/15 hover:bg-red-50/60 dark:hover:bg-red-950/25'
-                            : 'bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-900/70'
+                            ? 'bg-red-50/40 dark:bg-red-950/15 hover:bg-red-50/70 dark:hover:bg-red-950/25'
+                            : 'bg-white dark:bg-[#0d1117] hover:bg-[#f6f8fa] dark:hover:bg-[#161b22]'
                         }`}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
@@ -749,30 +769,30 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
                                 ? 'text-blue-600 dark:text-blue-400 border-blue-400 font-bold'
                                 : log.level === 'ERROR'
                                 ? 'text-red-600 dark:text-red-400 border-red-300 dark:border-red-900 font-semibold'
-                                : 'text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-800'
+                                : 'text-[#656d76] dark:text-[#8b949e] border-[#d0d7de] dark:border-[#30363d]'
                             }`}
                           >
                             {lineNumber}
                           </span>
                           <span
-                            className={`px-1.5 py-0.5 rounded font-mono text-[10px] font-bold shrink-0 ${
+                            className={`font-mono text-[11px] font-bold shrink-0 ${
                               log.level === 'SUCCESS'
-                                ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                                ? 'text-emerald-700 dark:text-emerald-400'
                                 : log.level === 'ERROR'
-                                ? 'bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300'
-                                : 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
+                                ? 'text-red-600 dark:text-red-400'
+                                : 'text-blue-600 dark:text-blue-400'
                             }`}
                           >
                             {log.level}
                           </span>
-                          <span className="font-semibold text-slate-900 dark:text-slate-100 font-mono shrink-0">
+                          <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3] font-mono shrink-0">
                             {log.event}
                           </span>
-                          <span className="text-slate-600 dark:text-slate-400 truncate">
+                          <span className="text-[#656d76] dark:text-[#8b949e] truncate">
                             {log.details}
                           </span>
                         </div>
-                        <span className="text-slate-400 font-mono text-[11px] shrink-0 pl-10 sm:pl-0">
+                        <span className="text-[#656d76] dark:text-[#8b949e] font-mono tabular-nums text-[11px] shrink-0 pl-10 sm:pl-0">
                           {log.time}
                         </span>
                       </div>

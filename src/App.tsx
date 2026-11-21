@@ -50,6 +50,8 @@ import {
   Shield,
   FileText,
   Users,
+  MessageSquare,
+  Sparkles,
 } from 'lucide-react';
 import {
   DeveloperPeer,
@@ -3096,17 +3098,52 @@ export default function App() {
     const targetBranchName = activeRepo?.branch || bugBranch || 'main';
     const targetFileName = activeFile?.path || bugFile || 'src/index.ts';
 
+    const recentHistory = (messagesByPeer[targetChannelKey] || [])
+      .slice(-10)
+      .map((m) => ({
+        role: m.senderRole === 'copilot' ? ('assistant' as const) : ('user' as const),
+        text: m.text,
+      }));
+
     const buildLocalSharkFallback = () => {
+      const lower = resolvedPrompt.toLowerCase();
+      const wantsCode =
+        /\b(fix|patch|bug|error|stack ?trace|refactor|diff|debug|review|optimize|function|typescript|code)\b/.test(
+          lower
+        ) && !/\b(how do i use|what is nerve|help me understand|getting started|onboarding)\b/.test(lower);
+
+      if (!wantsCode) {
+        return {
+          mode: 'chat' as const,
+          summary:
+            'Hi — I am Nerve Shark, your built-in guide and coding assistant.\n\n• Workspace: Track any GitHub/GitLab/Bitbucket repo from the left sidebar, inspect files in the Code drawer, and run commands in the Codespace terminal.\n• Direct Messages: Add a teammate with `+ @peer-handle` for end-to-end encrypted P2P chat.\n• Incidents: Type `/bug` or click New Issue to log a bug with file and line context.\n• Integration: Open the Integration tab to manage Live/Test API keys, SSH keys, SDKs, or ask me integration questions directly there.',
+          suggestedPatch: '',
+          recommendedTerminalCommand: '',
+          prTitle: '',
+          suggestedFollowUps: [
+            'How do I track a GitHub repo and run tests?',
+            'How do E2EE peer chats and /bug tickets work?',
+            'How do I set up API keys and SSH keys in Integration?',
+          ],
+        };
+      }
+
       const focusSnippet = displayedCodeLines
         .slice(Math.max(0, (highlightedLine || 1) - 2), (highlightedLine || 1) + 4)
         .join('\n');
       return {
-        summary: `Nerve Shark analyzed ${targetRepoName}#${targetBranchName}/${targetFileName} (L${highlightedLine || 1}) for "${resolvedPrompt}" and prepared a defensive patch.`,
+        mode: 'code' as const,
+        summary: `Analyzed ${targetRepoName}#${targetBranchName}/${targetFileName} (L${highlightedLine || 1}) for "${resolvedPrompt}" and prepared a defensive patch.`,
         suggestedPatch: focusSnippet
           ? `// Guarded update for ${targetFileName} (L${highlightedLine || 1})\n${focusSnippet}\n// Added explicit boundary & null-safety check`
           : `// Guarded update for ${targetFileName}\nif (!context) {\n  throw new Error('Missing execution context in ${targetFileName}');\n}`,
         recommendedTerminalCommand: 'npm test',
         prTitle: `fix(${targetFileName.split('/').pop() || 'core'}): stabilize ${targetFileName}`,
+        suggestedFollowUps: [
+          'Explain what this patch changes',
+          'Run tests in the Codespace terminal',
+          'How do I open a PR from Incidents?',
+        ],
       };
     };
 
@@ -3122,6 +3159,9 @@ export default function App() {
           },
           body: JSON.stringify({
             prompt: resolvedPrompt,
+            mode: 'auto',
+            surface: 'workspace',
+            history: recentHistory,
             repo: targetRepoName,
             branch: targetBranchName,
             filePath: targetFileName,
@@ -3139,7 +3179,7 @@ export default function App() {
         if (controller.signal.aborted || err?.name === 'AbortError' || requestId !== sharkRequestIdRef.current) {
           return;
         }
-        // Use local fallback when backend is unreachable (e.g. static deployment or offline)
+        // Use local fallback when backend is unreachable
       }
 
       if (controller.signal.aborted || requestId !== sharkRequestIdRef.current) {
@@ -3150,6 +3190,14 @@ export default function App() {
         data = buildLocalSharkFallback();
       }
 
+      const resolvedMode: 'chat' | 'code' = data.mode === 'code' ? 'code' : 'chat';
+      const cleanedPatch = typeof data.suggestedPatch === 'string' ? data.suggestedPatch.trim() : '';
+      const followUps = Array.isArray(data.suggestedFollowUps)
+        ? data.suggestedFollowUps
+            .filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0)
+            .slice(0, 3)
+        : undefined;
+
       const sharkMsg: ChatMessage = {
         id: `msg-shark-${Date.now()}`,
         senderHandle: 'shark',
@@ -3157,13 +3205,19 @@ export default function App() {
         senderRole: 'copilot',
         timestamp: new Date().toLocaleTimeString(),
         text: data.summary,
-        copilotPatch: {
-          summary: data.summary,
-          suggestedPatch: data.suggestedPatch || buildLocalSharkFallback().suggestedPatch,
-          recommendedTerminalCommand: data.recommendedTerminalCommand || 'npm test',
-          prTitle: data.prTitle || `fix: patch ${targetFileName}`,
-          applied: false,
-        },
+        sharkMode: resolvedMode,
+        suggestedFollowUps: followUps,
+        ...(resolvedMode === 'code' && cleanedPatch
+          ? {
+              copilotPatch: {
+                summary: data.summary,
+                suggestedPatch: cleanedPatch,
+                recommendedTerminalCommand: data.recommendedTerminalCommand || 'npm test',
+                prTitle: data.prTitle || `fix: patch ${targetFileName}`,
+                applied: false,
+              },
+            }
+          : {}),
       };
 
       setMessagesByPeer((prev) => ({
@@ -4060,76 +4114,96 @@ export default function App() {
   const isAuthenticated = Boolean(currentUser || emailSession);
 
   return (
-    <div className="min-h-screen overflow-x-clip bg-white dark:bg-black text-black dark:text-white flex flex-col transition-colors">
+    <div className="min-h-screen overflow-x-clip bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] flex flex-col transition-colors">
       {/* =====================================================================
-          RESPONSIVE TOP BAR + MOBILE SLIDING NAVBAR DRAWER TRIGGER
+          GITHUB-CLEAN TOP NAVIGATION BAR
       ===================================================================== */}
-      <header className="flex items-center justify-between gap-2 px-3 sm:px-6 h-13 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black sticky top-0 z-30">
-        <button
-          type="button"
-          onClick={() => {
-            setIsMobileMenuOpen(false);
-            setShowBugModal(false);
-            setShowAuthModal(false);
-            setShowConnectedUsersModal(false);
-            setShowSearchDropdown(false);
-            setGithubSearchQuery('');
-            setGithubSearchType('all');
-            setShowWorkspaceDashboard(true);
-            setWorkspaceDashboardTab('contributors');
-            setIsCodeDrawerOpen(true);
-            setShowTerminal(true);
-            setShowFileExplorer(true);
-            handleCloseActiveChannel();
-            setActiveTab('workspace');
-            window.scrollTo({ top: 0, behavior: 'auto' });
-          }}
-          aria-label="Reset to Nerve Workspace"
-          title="Reset to Workspace"
-          className="text-base font-bold tracking-tight text-black dark:text-white whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity"
-        >
-          <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0"></span>
-          <span>Nerve</span>
-        </button>
+      <header className="flex items-center justify-between gap-3 px-4 sm:px-6 h-14 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] sticky top-0 z-30">
+        <div className="flex items-center gap-6 min-w-0">
+          <button
+            type="button"
+            onClick={() => {
+              setIsMobileMenuOpen(false);
+              setShowBugModal(false);
+              setShowAuthModal(false);
+              setShowConnectedUsersModal(false);
+              setShowSearchDropdown(false);
+              setGithubSearchQuery('');
+              setGithubSearchType('all');
+              setShowWorkspaceDashboard(true);
+              setWorkspaceDashboardTab('contributors');
+              setIsCodeDrawerOpen(true);
+              setShowTerminal(true);
+              setShowFileExplorer(true);
+              handleCloseActiveChannel();
+              setActiveTab('workspace');
+              window.scrollTo({ top: 0, behavior: 'auto' });
+            }}
+            aria-label="Reset to Nerve Workspace"
+            title="Nerve Home"
+            className="text-base font-bold tracking-tight text-[#1f2328] dark:text-[#e6edf3] whitespace-nowrap shrink-0 flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"
+          >
+            <Code2 className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
+            <span>Nerve</span>
+          </button>
 
-        {/* Desktop Center Navigation */}
-        <nav className="hidden md:flex items-center gap-5 lg:gap-6 text-xs sm:text-sm font-medium text-black/70 dark:text-white/70">
-          {([
-            { key: 'workspace', label: 'Workspace' },
-            { key: 'incidents', label: 'Incidents' },
-            { key: 'integration', label: 'Integration' },
-            { key: 'privacy', label: 'Privacy' },
-            { key: 'terms', label: 'Terms' },
-          ] as const).map(({ key, label }) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActiveTab(key)}
-              className={`hover:text-black dark:hover:text-white transition-colors py-1 cursor-pointer whitespace-nowrap shrink-0 ${
-                activeTab === key
-                  ? 'text-black dark:text-white font-semibold underline underline-offset-8 decoration-2 decoration-blue-600 dark:decoration-blue-400'
-                  : ''
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
+          {/* Desktop Primary Navigation (GitHub-style clean tabs) */}
+          <nav className="hidden md:flex items-center gap-1 text-sm font-medium">
+            {([
+              { key: 'workspace', label: 'Workspace' },
+              { key: 'incidents', label: 'Incidents', count: incidentReports.length },
+              { key: 'integration', label: 'Integration' },
+            ] as const).map(({ key, label, ...rest }) => {
+              const count = 'count' in rest ? rest.count : undefined;
+              const isActive = activeTab === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setActiveTab(key)}
+                  className={`relative px-3 py-1.5 rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                    isActive
+                      ? 'text-[#1f2328] dark:text-[#e6edf3] font-semibold bg-white dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d]'
+                      : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <span>{label}</span>
+                  {typeof count === 'number' && count > 0 && (
+                    <span className="text-xs font-mono text-[#656d76] dark:text-[#8b949e] tabular-nums">
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
 
         {/* Desktop Right Controls */}
         <div className="hidden md:flex items-center gap-2 shrink-0">
-          {/* Sign In / Authenticated User Profile */}
+          {isOffline && (
+            <span
+              role="status"
+              aria-live="polite"
+              title="Offline — actions are queued locally"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-amber-700 dark:text-amber-300 border border-amber-500/40 bg-amber-500/10 whitespace-nowrap shrink-0"
+            >
+              <WifiOff className="w-3.5 h-3.5" />
+              <span>Offline</span>
+            </span>
+          )}
+
           {isAuthenticated ? (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-xs">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-xs">
               {currentUser?.photoURL && (
                 <img
                   src={currentUser.photoURL}
                   alt={authenticatedDisplayName}
-                  className="w-4 h-4 rounded-full"
+                  className="w-4 h-4 rounded-full shrink-0"
                   referrerPolicy="no-referrer"
                 />
               )}
-              <span className="font-medium text-black dark:text-white max-w-[110px] truncate">
+              <span className="font-medium text-[#1f2328] dark:text-[#e6edf3] max-w-[120px] truncate">
                 {authenticatedDisplayName}
               </span>
               {activeSignedInEmail && (
@@ -4145,7 +4219,7 @@ export default function App() {
               <button
                 onClick={handleSignOutAll}
                 title="Sign Out"
-                className="text-neutral-500 hover:text-red-500 cursor-pointer ml-1"
+                className="text-[#656d76] dark:text-[#8b949e] hover:text-red-500 cursor-pointer ml-1"
               >
                 <LogOut className="w-3.5 h-3.5" />
               </button>
@@ -4157,88 +4231,43 @@ export default function App() {
                 setAuthError('');
                 setShowAuthModal(true);
               }}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f3f4f6] dark:hover:bg-[#30363d] flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
             >
               <LogIn className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
               <span>Sign In</span>
             </button>
           )}
 
-          {/* Passive Network Observer WiFi Icon (Icon only on navbar; Online/Offline text is in the menu aligned with Terminal OPEN/CLOSED) */}
-          <div
-            role="status"
-            aria-live="polite"
-            title={
-              isOffline
-                ? 'Network Offline · Actions queued locally'
-                : `Network Online · ${networkLatency !== null ? `${networkLatency}ms latency` : 'Connected'} · ${networkSignalQuality} signal`
-            }
-            className={`p-1.5 rounded-lg text-xs font-medium border flex items-center gap-1 select-none pointer-events-none transition-colors ${
-              isOffline
-                ? 'border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-300'
-                : networkSignalQuality === 'slow'
-                ? 'border-amber-500/30 bg-amber-500/5 text-amber-500'
-                : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white'
-            }`}
-          >
-            {isOffline ? (
-              <WifiOff className="w-3.5 h-3.5 text-amber-500" />
-            ) : (
-              <Wifi
-                className={`w-3.5 h-3.5 ${
-                  networkSignalQuality === 'strong'
-                    ? 'text-emerald-500'
-                    : networkSignalQuality === 'moderate'
-                    ? 'text-emerald-400'
-                    : 'text-amber-400'
-                }`}
-              />
-            )}
-            {!isOffline && networkLatency !== null && (
-              <span className="text-[10px] font-mono text-neutral-500 hidden xl:inline tabular-nums">
-                {networkLatency}ms
-              </span>
-            )}
-          </div>
-
           <button
             onClick={toggleTheme}
             aria-label="Toggle Theme"
-            className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 text-black dark:text-white bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer"
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="p-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#21262d] hover:bg-[#f3f4f6] dark:hover:bg-[#30363d] cursor-pointer shrink-0"
           >
             {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </button>
 
           <button
             onClick={() => setShowBugModal(true)}
-            className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg whitespace-nowrap cursor-pointer"
+            className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
           >
-            Report /bug
+            <Plus className="w-3.5 h-3.5" />
+            <span>New Issue</span>
           </button>
         </div>
 
-        {/* Mobile Compact Actions: Passive WiFi status icon + /bug + Sliding Navbar Menu */}
-        <div className="flex md:hidden items-center gap-1.5">
-          <div
-            role="status"
-            aria-live="polite"
-            title={isOffline ? 'Network Offline' : `Network Online (${networkSignalQuality})`}
-            className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black select-none pointer-events-none flex items-center"
-          >
-            {isOffline ? (
-              <WifiOff className="w-3.5 h-3.5 text-amber-500" />
-            ) : (
-              <Wifi
-                className={`w-3.5 h-3.5 ${
-                  networkSignalQuality === 'strong'
-                    ? 'text-emerald-500'
-                    : networkSignalQuality === 'moderate'
-                    ? 'text-emerald-400'
-                    : 'text-amber-400'
-                }`}
-              />
-            )}
-          </div>
+        {/* Mobile Compact Actions */}
+        <div className="flex md:hidden items-center gap-1.5 shrink-0">
+          {isOffline && (
+            <span
+              role="status"
+              aria-live="polite"
+              title="Network Offline"
+              className="p-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300 flex items-center"
+            >
+              <WifiOff className="w-3.5 h-3.5" />
+            </span>
+          )}
 
           <button
             type="button"
@@ -4255,23 +4284,23 @@ export default function App() {
               }, 100);
             }}
             title="Open Codespace Terminal"
-            className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 text-black dark:text-white bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer flex items-center"
+            className="p-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#21262d] cursor-pointer flex items-center"
           >
-            <Terminal className="w-3.5 h-3.5 text-blue-500" />
+            <Terminal className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
           </button>
 
           <button
             onClick={() => setShowBugModal(true)}
-            className="px-2.5 py-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
+            className="px-2.5 py-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md cursor-pointer whitespace-nowrap"
           >
-            /bug
+            New Issue
           </button>
 
           <button
             type="button"
             onClick={() => setIsMobileMenuOpen(true)}
             aria-label="Open navigation menu"
-            className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 text-black dark:text-white bg-white dark:bg-black cursor-pointer"
+            className="p-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#21262d] cursor-pointer"
           >
             <Menu className="w-4 h-4" />
           </button>
@@ -4297,47 +4326,46 @@ export default function App() {
               role="dialog"
               aria-modal="true"
               aria-label="Nerve Navigation Menu"
-              className="fixed top-0 right-0 bottom-0 z-[9999] w-72 max-w-[85vw] bg-white dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 border-l border-neutral-200 dark:border-neutral-800 p-4 flex flex-col justify-between shadow-2xl overflow-y-auto"
+              className="fixed top-0 right-0 bottom-0 z-[9999] w-72 max-w-[85vw] bg-white dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] border-l border-[#d0d7de] dark:border-[#30363d] p-4 flex flex-col justify-between shadow-2xl overflow-y-auto"
             >
             <div className="space-y-4">
               {/* Header */}
-              <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-3">
-                <div className="flex items-center gap-2 font-bold text-sm">
-                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
-                  <span className="tracking-tight font-sans">Nerve Menu</span>
-                </div>
+              <div className="flex items-center justify-between border-b border-[#d0d7de] dark:border-[#30363d] pb-3">
+                <span className="font-bold text-sm tracking-tight font-sans text-[#1f2328] dark:text-[#e6edf3]">
+                  Nerve
+                </span>
                 <button
                   type="button"
                   onClick={() => setIsMobileMenuOpen(false)}
                   aria-label="Close navigation menu"
-                  className="p-1.5 rounded-lg text-neutral-500 hover:text-black dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer transition-colors"
+                  className="p-1.5 rounded-md text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] cursor-pointer transition-colors"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               {/* Navigation Links */}
-              <div className="space-y-1.5">
-                <div className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider px-1">
+              <div className="space-y-1">
+                <div className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] px-2 pb-1">
                   Navigation
                 </div>
                 {[
                   {
                     key: 'workspace',
                     label: 'Workspace',
-                    desc: 'P2P chat, repos & editor',
+                    desc: 'Chat, repositories & code editor',
                     icon: Layers,
                   },
                   {
                     key: 'incidents',
                     label: 'Incidents',
-                    desc: 'Triage & Nerve Shark PRs',
+                    desc: 'Issue triage & pull request diffs',
                     icon: AlertTriangle,
                   },
                   {
                     key: 'integration',
                     label: 'Integration',
-                    desc: 'CI/CD, API keys & SSH',
+                    desc: 'API keys, SSH & webhooks',
                     icon: Globe,
                   },
                   {
@@ -4360,32 +4388,27 @@ export default function App() {
                       setActiveTab(key as ActiveTab);
                       setIsMobileMenuOpen(false);
                     }}
-                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs transition-all cursor-pointer flex items-center justify-between ${
+                    className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors cursor-pointer flex items-center gap-2.5 ${
                       activeTab === key
-                        ? 'bg-blue-600 text-white font-semibold shadow-sm'
-                        : 'text-neutral-800 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800/70 border border-transparent'
+                        ? 'bg-blue-600 text-white font-semibold'
+                        : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d]'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <Icon className={`w-4 h-4 shrink-0 ${activeTab === key ? 'text-white' : 'text-blue-500'}`} />
-                      <div className="min-w-0">
-                        <div className="font-semibold leading-tight">{label}</div>
-                        <div className={`text-[10px] truncate ${activeTab === key ? 'text-blue-100' : 'text-neutral-500 dark:text-neutral-400'}`}>
-                          {desc}
-                        </div>
+                    <Icon className={`w-4 h-4 shrink-0 ${activeTab === key ? 'text-white' : 'text-[#656d76] dark:text-[#8b949e]'}`} />
+                    <div className="min-w-0">
+                      <div className="font-semibold leading-tight">{label}</div>
+                      <div className={`text-[11px] truncate ${activeTab === key ? 'text-blue-100' : 'text-[#656d76] dark:text-[#8b949e]'}`}>
+                        {desc}
                       </div>
                     </div>
-                    {activeTab === key && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-white shrink-0 ml-1"></span>
-                    )}
                   </button>
                 ))}
               </div>
 
               {/* Codespace Terminal Quick Toggle */}
-              <div className="space-y-1.5 pt-2 border-t border-neutral-200 dark:border-neutral-800">
-                <div className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider px-1">
-                  Terminal & Shell
+              <div className="space-y-1.5 pt-3 border-t border-[#d0d7de] dark:border-[#30363d]">
+                <div className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] px-2">
+                  Tools
                 </div>
                 <button
                   type="button"
@@ -4410,97 +4433,56 @@ export default function App() {
                       }
                     }, 80);
                   }}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/50 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-900 dark:text-white flex items-center justify-between cursor-pointer transition-colors"
+                  className="w-full px-3 py-2 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] hover:bg-[#e6ebf1] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center justify-between cursor-pointer transition-colors"
                 >
                   <span className="flex items-center gap-2">
-                    <Terminal className="w-4 h-4 text-emerald-500" />
-                    <span className="font-semibold">Codespace Terminal</span>
+                    <Terminal className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                    <span className="font-semibold">Terminal</span>
                   </span>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                    isCodeDrawerOpen && showTerminal
-                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
-                      : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300'
-                  }`}>
-                    {isCodeDrawerOpen && showTerminal ? 'OPEN' : 'CLOSED'}
+                  <span className="text-[11px] text-[#656d76] dark:text-[#8b949e]">
+                    {isCodeDrawerOpen && showTerminal ? 'Open' : 'Closed'}
                   </span>
                 </button>
-              </div>
-
-              {/* System Controls */}
-              <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
-                <div className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider px-1">
-                  System
-                </div>
-
-                {/* Passive Network Indicator */}
-                <div
-                  role="status"
-                  className="w-full px-3 py-2 rounded-xl text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/40 text-neutral-900 dark:text-white flex items-center justify-between select-none pointer-events-none"
-                >
-                  <div className="flex items-center gap-2">
-                    {isOffline ? (
-                      <WifiOff className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                    ) : (
-                      <Wifi
-                        className={`w-3.5 h-3.5 shrink-0 ${
-                          networkSignalQuality === 'strong'
-                            ? 'text-emerald-500'
-                            : networkSignalQuality === 'moderate'
-                            ? 'text-emerald-400'
-                            : 'text-amber-400'
-                        }`}
-                      />
-                    )}
-                    <span className="font-mono text-[11px]">
-                      {isOffline
-                        ? 'Offline'
-                        : `Online${networkLatency !== null ? ` (${networkLatency}ms)` : ''}`}
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-mono text-neutral-500 capitalize">
-                    {networkSignalQuality}
-                  </span>
-                </div>
 
                 {/* Theme Toggle */}
                 <button
                   type="button"
                   onClick={toggleTheme}
-                  className="w-full px-3 py-2 rounded-xl text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-800/40 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-900 dark:text-white flex items-center justify-between cursor-pointer transition-colors"
+                  className="w-full px-3 py-2 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] hover:bg-[#e6ebf1] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center justify-between cursor-pointer transition-colors"
                 >
                   <span className="flex items-center gap-2">
-                    {isDark ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-blue-500" />}
-                    <span>Theme</span>
+                    {isDark ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-blue-600" />}
+                    <span>Appearance</span>
                   </span>
-                  <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">
-                    {isDark ? 'Dark Mode' : 'Light Mode'}
+                  <span className="text-[11px] text-[#656d76] dark:text-[#8b949e]">
+                    {isDark ? 'Dark' : 'Light'}
                   </span>
                 </button>
 
-                {/* Report Bug */}
+                {/* New Issue */}
                 <button
                   type="button"
                   onClick={() => {
                     setIsMobileMenuOpen(false);
                     setShowBugModal(true);
                   }}
-                  className="w-full px-3 py-2 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white text-center cursor-pointer transition-colors shadow-sm"
+                  className="w-full px-3 py-2 rounded-md text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white text-center cursor-pointer transition-colors"
                 >
-                  Report /bug
+                  New Issue
                 </button>
               </div>
             </div>
 
             {/* Sign In / Profile Section at Bottom */}
-            <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 mt-4">
+            <div className="pt-3 border-t border-[#d0d7de] dark:border-[#30363d] mt-4">
               {isAuthenticated ? (
-                <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-200 dark:border-neutral-800">
+                <div className="flex items-center justify-between gap-2 p-2 rounded-md bg-[#f6f8fa] dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d]">
                   <div className="flex items-center gap-2 min-w-0">
                     {currentUser?.photoURL ? (
                       <img
                         src={currentUser.photoURL}
                         alt={authenticatedDisplayName}
-                        className="w-6 h-6 rounded-full shrink-0 ring-1 ring-blue-500"
+                        className="w-6 h-6 rounded-full shrink-0"
                         referrerPolicy="no-referrer"
                       />
                     ) : (
@@ -4512,8 +4494,8 @@ export default function App() {
                       <div className="text-xs font-semibold truncate leading-tight">
                         {authenticatedDisplayName}
                       </div>
-                      <div className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate font-mono">
-                        {currentUser?.email || emailSession?.email || 'Authenticated'}
+                      <div className="text-[10px] text-[#656d76] dark:text-[#8b949e] truncate font-mono">
+                        {currentUser?.email || emailSession?.email || 'Signed in'}
                       </div>
                     </div>
                   </div>
@@ -4524,7 +4506,7 @@ export default function App() {
                       handleSignOutAll();
                     }}
                     title="Sign Out"
-                    className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer transition-colors"
+                    className="p-1.5 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer transition-colors"
                   >
                     <LogOut className="w-4 h-4" />
                   </button>
@@ -4538,10 +4520,10 @@ export default function App() {
                     setAuthError('');
                     setShowAuthModal(true);
                   }}
-                  className="w-full py-2.5 px-3 rounded-xl text-xs font-semibold bg-neutral-900 hover:bg-neutral-800 text-white dark:bg-white dark:hover:bg-neutral-200 dark:text-black flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-colors"
+                  className="w-full py-2 px-3 rounded-md text-xs font-semibold bg-[#1f2328] hover:bg-[#32383f] text-white dark:bg-[#f0f6fc] dark:hover:bg-[#d0d7de] dark:text-[#0d1117] flex items-center justify-center gap-2 cursor-pointer transition-colors"
                 >
                   <LogIn className="w-3.5 h-3.5" />
-                  <span>Sign In / Register</span>
+                  <span>Sign In</span>
                 </button>
               )}
             </div>
@@ -4569,61 +4551,65 @@ export default function App() {
           VIEWPORT CONTENT
       ===================================================================== */}
       {activeTab === 'integration' && (
-        <Integration
-          keyEnvironment={keyEnvironment}
-          onChangeEnvironment={setKeyEnvironment}
-          liveApiKey={liveApiKey}
-          testApiKey={testApiKey}
-          onGenerateNewKey={handleCreateApiKey}
-          onTriggerWebhook={(eventType) => handleTriggerGitHubWebhook(eventType)}
-          repositories={repositories}
-          incidentReports={incidentReports}
-          currentUser={currentUser}
-          emailSession={emailSession}
-          verifiedEmail={integrationVerifiedEmail}
-          requiresReverification={requiresIntegrationReauth || Boolean(currentUser || emailSession)}
-          onChangeVerifiedEmail={saveIntegrationVerifiedEmail}
-          onSignOut={handleSignOutAll}
-          onAutoLockSignOut={handleAutoSignOutFromIntegration}
-          onBackToWorkspace={() => setActiveTab('workspace')}
-          onOpenConnectedUsers={(email) => handleOpenConnectedUsersModal(email)}
-          onUserAuthenticated={handleUserAuthenticatedFromIntegration}
-          onUpdateRepoCiStatus={(repo, status) => {
-            setRepositories((prev) =>
-              prev[repo]
-                ? {
-                    ...prev,
-                    [repo]: {
-                      ...prev[repo],
-                      ciStatus: status,
-                    },
-                  }
-                : prev
-            );
-          }}
-          isDark={isDark}
-        />
+        <main className="flex-1 flex flex-col">
+          <Integration
+            keyEnvironment={keyEnvironment}
+            onChangeEnvironment={setKeyEnvironment}
+            liveApiKey={liveApiKey}
+            testApiKey={testApiKey}
+            onGenerateNewKey={handleCreateApiKey}
+            onTriggerWebhook={(eventType) => handleTriggerGitHubWebhook(eventType)}
+            repositories={repositories}
+            incidentReports={incidentReports}
+            currentUser={currentUser}
+            emailSession={emailSession}
+            verifiedEmail={integrationVerifiedEmail}
+            requiresReverification={requiresIntegrationReauth || Boolean(currentUser || emailSession)}
+            onChangeVerifiedEmail={saveIntegrationVerifiedEmail}
+            onSignOut={handleSignOutAll}
+            onAutoLockSignOut={handleAutoSignOutFromIntegration}
+            onBackToWorkspace={() => setActiveTab('workspace')}
+            onOpenConnectedUsers={(email) => handleOpenConnectedUsersModal(email)}
+            onUserAuthenticated={handleUserAuthenticatedFromIntegration}
+            onUpdateRepoCiStatus={(repo, status) => {
+              setRepositories((prev) =>
+                prev[repo]
+                  ? {
+                      ...prev,
+                      [repo]: {
+                        ...prev[repo],
+                        ciStatus: status,
+                      },
+                    }
+                  : prev
+              );
+            }}
+            isDark={isDark}
+          />
+        </main>
       )}
 
       {activeTab === 'incidents' && (
-        <IncidentWorkflowView
-          reports={incidentReports}
-          selectedTicketId={selectedIncidentTicketId}
-          onSelectTicket={(ticketId) => setSelectedIncidentTicketId(ticketId)}
-          onRunTestForIncident={async () => {
-            await handleRunCodespaceCommand('npm test');
-            setActiveTab('workspace');
-          }}
-          onDeployFixForIncident={async (ticketId) => {
-            await handleResolveIncidentWithPR(ticketId);
-          }}
-          onTriggerWebhook={(eventType, ticketId) =>
-            handleTriggerGitHubWebhook(eventType, ticketId)
-          }
-          onOpenBugModal={() => setShowBugModal(true)}
-          onBackToMessenger={() => setActiveTab('workspace')}
-          isDark={isDark}
-        />
+        <main className="flex-1 flex flex-col">
+          <IncidentWorkflowView
+            reports={incidentReports}
+            selectedTicketId={selectedIncidentTicketId}
+            onSelectTicket={(ticketId) => setSelectedIncidentTicketId(ticketId)}
+            onRunTestForIncident={async () => {
+              await handleRunCodespaceCommand('npm test');
+              setActiveTab('workspace');
+            }}
+            onDeployFixForIncident={async (ticketId) => {
+              await handleResolveIncidentWithPR(ticketId);
+            }}
+            onTriggerWebhook={(eventType, ticketId) =>
+              handleTriggerGitHubWebhook(eventType, ticketId)
+            }
+            onOpenBugModal={() => setShowBugModal(true)}
+            onBackToMessenger={() => setActiveTab('workspace')}
+            isDark={isDark}
+          />
+        </main>
       )}
 
       {activeTab === 'privacy' && (
@@ -4643,21 +4629,17 @@ export default function App() {
       )}
 
       {activeTab === 'workspace' && (
-        <main className="flex-1 flex flex-col lg:flex-row min-h-[calc(100vh-52px)] divide-y lg:divide-y-0 lg:divide-x divide-neutral-200 dark:divide-neutral-800">
+        <main className="flex-1 flex flex-col lg:flex-row min-h-[calc(100vh-56px)]">
           {/* =================================================================
-              LEFT: Streamlined Chat Stream & Real GitHub Search
+              LEFT SIDEBAR: GitHub-Style Navigation (Search, Nerve Shark, Peers, Repos)
           ================================================================= */}
-          <section className="flex-1 bg-white dark:bg-black flex flex-col justify-between min-w-0">
-            {/* GitHub Search & Peer Bar */}
-            <div className="px-3 sm:px-5 py-2.5 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black space-y-2">
-              {/* Row 1: GitHub Search Bar for External Repositories & Peers */}
-              <div className="relative">
-                <form
-                  onSubmit={(e) => handleExecuteGitHubSearch(e)}
-                  className="flex flex-wrap sm:flex-nowrap items-center gap-1.5"
-                >
-                  <div className="relative flex-1 min-w-[180px]">
-                    <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <aside className="w-full lg:w-64 xl:w-72 shrink-0 bg-[#f6f8fa] dark:bg-[#161b22] border-b lg:border-b-0 lg:border-r border-[#d0d7de] dark:border-[#30363d] flex flex-col justify-between">
+            <div className="p-3.5 space-y-5 overflow-y-auto">
+              {/* Search Repos & Peers */}
+              <div className="relative space-y-2">
+                <form onSubmit={(e) => handleExecuteGitHubSearch(e)} className="space-y-1.5">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
                       ref={githubSearchInputRef}
                       type="text"
@@ -4671,170 +4653,226 @@ export default function App() {
                           setShowSearchDropdown(true);
                         }
                       }}
-                      placeholder="Search any repo channel (GitHub, GitLab, Bitbucket, owner/repo) or @peer... (Ctrl+Shift+P)"
-                      className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      placeholder="Search repo or @peer..."
+                      className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                   </div>
-
-                  <div className="flex items-center gap-1 bg-neutral-100 dark:bg-neutral-900 p-0.5 rounded-lg text-[11px] border border-neutral-200 dark:border-neutral-800">
-                    {(['all', 'repositories', 'users'] as const).map((filterKey) => (
-                      <button
-                        key={filterKey}
-                        type="button"
-                        onClick={() => {
-                          setGithubSearchType(filterKey);
-                          if (githubSearchQuery.trim()) {
-                            handleExecuteGitHubSearch(undefined, filterKey);
-                          }
-                        }}
-                        className={`px-2 py-1 rounded-md font-medium capitalize transition-colors cursor-pointer ${
-                          githubSearchType === filterKey
-                            ? 'bg-blue-600 text-white'
-                            : 'text-black dark:text-white'
-                        }`}
-                      >
-                        {filterKey === 'repositories' ? 'Repos' : filterKey === 'users' ? 'Peers' : 'All'}
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isSearchingGitHub}
-                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white cursor-pointer whitespace-nowrap"
-                  >
-                    {isSearchingGitHub ? '...' : 'Search'}
-                  </button>
-
-                  {showSearchDropdown && (
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-0.5 bg-white dark:bg-[#0d1117] p-0.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[11px]">
+                      {(['all', 'repositories', 'users'] as const).map((filterKey) => (
+                        <button
+                          key={filterKey}
+                          type="button"
+                          onClick={() => {
+                            setGithubSearchType(filterKey);
+                            if (githubSearchQuery.trim()) {
+                              handleExecuteGitHubSearch(undefined, filterKey);
+                            }
+                          }}
+                          className={`px-2 py-0.5 rounded font-medium transition-colors cursor-pointer ${
+                            githubSearchType === filterKey
+                              ? 'bg-blue-600 text-white'
+                              : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
+                          }`}
+                        >
+                          {filterKey === 'repositories' ? 'Repos' : filterKey === 'users' ? 'Peers' : 'All'}
+                        </button>
+                      ))}
+                    </div>
                     <button
-                      type="button"
-                      onClick={() => setShowSearchDropdown(false)}
-                      className="p-1 rounded-lg text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                      type="submit"
+                      disabled={isSearchingGitHub}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-[#21262d] dark:bg-[#30363d] hover:bg-blue-600 text-white cursor-pointer whitespace-nowrap shrink-0 transition-colors"
                     >
-                      <X className="w-3.5 h-3.5" />
+                      {isSearchingGitHub ? '...' : 'Search'}
                     </button>
-                  )}
+                  </div>
                 </form>
 
-                {/* GitHub Search Results Popover */}
+                {/* Search Results Popover */}
                 {showSearchDropdown && (
-                  <div className="mt-2 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black shadow-lg p-3 space-y-2.5 z-20">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                      {(githubSearchType === 'all' || githubSearchType === 'repositories') && (
-                        <div className="space-y-1.5">
-                          <div className="text-[11px] font-semibold text-black dark:text-white">
-                            Repositories ({githubSearchResults.repositories.length})
-                          </div>
-                          {githubSearchResults.repositories.length === 0 ? (
-                            <div className="text-xs text-neutral-500 py-1">No repositories found.</div>
-                          ) : (
-                            githubSearchResults.repositories.map((repoItem) => {
-                              const alreadyTracked = Boolean(repositories[repoItem.fullName]);
-                              return (
-                                <div
-                                  key={repoItem.fullName}
-                                  className="p-2 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black flex items-center justify-between gap-2"
-                                >
-                                  <div className="min-w-0">
-                                    <div className="text-xs font-mono font-semibold text-black dark:text-white truncate">
-                                      {repoItem.fullName}
-                                    </div>
-                                    <div className="text-[11px] text-neutral-500 truncate">
-                                      {repoItem.language} · {repoItem.stars.toLocaleString()} ★
-                                    </div>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleTrackExternalRepository(repoItem)}
-                                    className={`px-2 py-1 rounded-md text-xs font-medium shrink-0 cursor-pointer ${
-                                      alreadyTracked
-                                        ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
-                                        : 'bg-blue-600 hover:bg-blue-500 text-white'
-                                    }`}
-                                  >
-                                    {alreadyTracked ? 'Open' : '+ Track'}
-                                  </button>
-                                </div>
-                              );
-                            })
-                          )}
-                        </div>
-                      )}
-
-                      {(githubSearchType === 'all' || githubSearchType === 'users') && (
-                        <div className="space-y-1.5">
-                          <div className="text-[11px] font-semibold text-black dark:text-white">
-                            Developers ({githubSearchResults.users.length})
-                          </div>
-                          {githubSearchResults.users.length === 0 ? (
-                            <div className="text-xs text-neutral-500 py-1">No users found.</div>
-                          ) : (
-                            githubSearchResults.users.map((userItem) => {
-                              const alreadyPeer = peers.some(
-                                (p) => p.handle.toLowerCase() === userItem.login.toLowerCase()
-                              );
-                              return (
-                                <div
-                                  key={userItem.login}
-                                  className="p-2 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black flex items-center justify-between gap-2"
-                                >
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    <img
-                                      src={userItem.avatarUrl}
-                                      alt={userItem.login}
-                                      className="w-5 h-5 rounded-full shrink-0"
-                                      referrerPolicy="no-referrer"
-                                    />
-                                    <span className="text-xs font-semibold text-black dark:text-white truncate">
-                                      @{userItem.login}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center gap-1 shrink-0">
-                                    <button
-                                      type="button"
-                                      disabled={isAddingPeer}
-                                      onClick={() => handleTrackSearchedPeer(userItem.login)}
-                                      className={`px-2 py-1 rounded-md text-xs font-medium shrink-0 cursor-pointer ${
-                                        alreadyPeer
-                                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
-                                          : 'bg-blue-600 hover:bg-blue-500 text-white'
-                                      }`}
-                                    >
-                                      {alreadyPeer ? 'Select' : '+ Add'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      title={`Delete @${userItem.login}`}
-                                      onClick={(e) => handleDeleteUserPeer(userItem.login, e)}
-                                      className="p-1 rounded-md border border-neutral-200 dark:border-neutral-800 text-neutral-500 hover:text-red-500 hover:border-red-500/40 cursor-pointer"
-                                    >
-                                      <X className="w-3.5 h-3.5" />
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })
-                          )}
-                        </div>
-                      )}
+                  <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] shadow-lg p-2.5 space-y-2.5 z-20">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                        Search Results
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowSearchDropdown(false)}
+                        className="p-0.5 rounded text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
                     </div>
+
+                    {(githubSearchType === 'all' || githubSearchType === 'repositories') && (
+                      <div className="space-y-1.5">
+                        <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                          Repositories ({githubSearchResults.repositories.length})
+                        </div>
+                        {githubSearchResults.repositories.length === 0 ? (
+                          <div className="text-xs text-[#656d76] py-1">No repositories found.</div>
+                        ) : (
+                          githubSearchResults.repositories.slice(0, 4).map((repoItem) => {
+                            const alreadyTracked = Boolean(repositories[repoItem.fullName]);
+                            return (
+                              <div
+                                key={repoItem.fullName}
+                                className="p-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <div className="text-xs font-mono font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                                    {repoItem.fullName}
+                                  </div>
+                                  <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] truncate">
+                                    {repoItem.language} · {repoItem.stars.toLocaleString()} ★
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleTrackExternalRepository(repoItem)}
+                                  className={`px-2 py-1 rounded text-[11px] font-medium shrink-0 cursor-pointer ${
+                                    alreadyTracked
+                                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                      : 'bg-blue-600 hover:bg-blue-500 text-white'
+                                  }`}
+                                >
+                                  {alreadyTracked ? 'Open' : 'Track'}
+                                </button>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+
+                    {(githubSearchType === 'all' || githubSearchType === 'users') && (
+                      <div className="space-y-1.5">
+                        <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                          Developers ({githubSearchResults.users.length})
+                        </div>
+                        {githubSearchResults.users.length === 0 ? (
+                          <div className="text-xs text-[#656d76] py-1">No users found.</div>
+                        ) : (
+                          githubSearchResults.users.slice(0, 4).map((userItem) => {
+                            const alreadyPeer = peers.some(
+                              (p) => p.handle.toLowerCase() === userItem.login.toLowerCase()
+                            );
+                            return (
+                              <div
+                                key={userItem.login}
+                                className="p-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between gap-2"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <img
+                                    src={userItem.avatarUrl}
+                                    alt={userItem.login}
+                                    className="w-5 h-5 rounded-full shrink-0"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                  <span className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                                    @{userItem.login}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  disabled={isAddingPeer}
+                                  onClick={() => handleTrackSearchedPeer(userItem.login)}
+                                  className={`px-2 py-1 rounded text-[11px] font-medium shrink-0 cursor-pointer ${
+                                    alreadyPeer
+                                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                      : 'bg-blue-600 hover:bg-blue-500 text-white'
+                                  }`}
+                                >
+                                  {alreadyPeer ? 'Open' : 'Add'}
+                                </button>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
 
-              {/* Row 2: Tracked GitHub Peers & Quick Controls */}
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 overflow-x-auto">
+              {/* Assistant Section: Nerve Shark Chatbox */}
+              <div className="space-y-1.5">
+                <div className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] px-1">
+                  Assistant
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedPeerHandle('nerve-shark');
+                      setTimeout(() => chatComposerInputRef.current?.focus(), 0);
+                    }}
+                    className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-colors cursor-pointer ${
+                      isSharkChannelActive
+                        ? 'bg-blue-600 text-white font-semibold'
+                        : 'bg-white dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500'
+                    }`}
+                  >
+                    <Sparkles
+                      className={`w-4 h-4 shrink-0 ${
+                        isSharkChannelActive ? 'text-white' : 'text-blue-600 dark:text-blue-400'
+                      }`}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold truncate">Nerve Shark</div>
+                      <div
+                        className={`text-[11px] truncate ${
+                          isSharkChannelActive
+                            ? 'text-blue-100'
+                            : 'text-[#656d76] dark:text-[#8b949e]'
+                        }`}
+                      >
+                        App guide &amp; code chatbox
+                      </div>
+                    </div>
+                  </button>
+                  {isSharkThinking && (
+                    <button
+                      type="button"
+                      onClick={handleCancelNerveShark}
+                      title="Cancel Nerve Shark request"
+                      className="p-2 rounded-md bg-red-600 hover:bg-red-500 text-white cursor-pointer shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Direct Messages Section */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e]">
+                    Direct Messages ({peers.length})
+                  </span>
+                  {activeSignedInEmail && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
+                      className="text-[11px] font-mono text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      title={`View @users connected to ${activeSignedInEmail}`}
+                    >
+                      @users
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-1">
                   {peers.map((peer) => {
                     const isSelected = activePeer?.handle === peer.handle;
                     return (
                       <div
                         key={peer.id}
-                        className={`pl-2.5 pr-1.5 py-1 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 whitespace-nowrap border ${
+                        className={`group flex items-center justify-between gap-1 px-2 py-1.5 rounded-md text-xs transition-colors ${
                           isSelected
-                            ? 'bg-blue-600 text-white border-blue-600'
-                            : 'bg-white dark:bg-black text-black dark:text-white border-neutral-200 dark:border-neutral-800'
+                            ? 'bg-blue-600 text-white font-medium'
+                            : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5'
                         }`}
                       >
                         <button
@@ -4844,31 +4882,36 @@ export default function App() {
                               ? handleCloseActiveChannel()
                               : setSelectedPeerHandle(peer.handle)
                           }
-                          title={isSelected ? `Close @${peer.handle} chat` : `Open @${peer.handle} chat`}
-                          className="flex items-center gap-1.5 cursor-pointer"
+                          className="flex items-center gap-2 min-w-0 flex-1 text-left cursor-pointer"
                         >
                           {peer.avatarUrl ? (
                             <img
                               src={peer.avatarUrl}
                               alt={peer.handle}
-                              className="w-4 h-4 rounded-full shrink-0"
+                              className="w-5 h-5 rounded-full shrink-0"
                               referrerPolicy="no-referrer"
                             />
                           ) : (
-                            <span className="font-mono font-bold text-[10px]">
+                            <span
+                              className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono font-bold shrink-0 ${
+                                isSelected
+                                  ? 'bg-blue-500 text-white'
+                                  : 'bg-[#e6ebf1] dark:bg-[#30363d] text-[#1f2328] dark:text-[#e6edf3]'
+                              }`}
+                            >
                               {peer.avatarInitials}
                             </span>
                           )}
-                          <span>@{peer.handle}</span>
+                          <span className="truncate">@{peer.handle}</span>
                         </button>
                         <button
                           type="button"
-                          title={`Delete @${peer.handle}`}
+                          title={`Remove @${peer.handle}`}
                           onClick={(e) => handleDeleteUserPeer(peer.handle, e)}
-                          className={`p-0.5 rounded transition-colors cursor-pointer ${
+                          className={`p-0.5 rounded cursor-pointer ${
                             isSelected
-                              ? 'text-white/80 hover:text-white hover:bg-blue-700'
-                              : 'text-neutral-400 hover:text-red-500 hover:bg-neutral-100 dark:hover:bg-neutral-900'
+                              ? 'text-white/80 hover:text-white'
+                              : 'text-[#656d76] opacity-70 hover:opacity-100 hover:text-red-500'
                           }`}
                         >
                           <X className="w-3 h-3" />
@@ -4877,308 +4920,295 @@ export default function App() {
                     );
                   })}
 
-                  <form onSubmit={handleAddRealGitHubPeer} className="flex items-center gap-1">
+                  <form onSubmit={handleAddRealGitHubPeer} className="flex items-center gap-1 pt-1">
                     <input
                       type="text"
                       value={newPeerGithubHandle}
                       onChange={(e) => setNewPeerGithubHandle(e.target.value)}
                       placeholder="+ @peer-handle"
-                      className="w-28 px-2 py-1 text-xs font-mono rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none"
+                      className="flex-1 min-w-0 px-2.5 py-1.5 text-xs font-mono rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
                     {newPeerGithubHandle.trim() && (
                       <button
                         type="submit"
                         disabled={isAddingPeer}
-                        className="p-1 rounded-lg bg-blue-600 text-white hover:bg-blue-500 cursor-pointer"
+                        className="p-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-500 cursor-pointer shrink-0"
                       >
                         <Plus className="w-3.5 h-3.5" />
                       </button>
                     )}
                   </form>
-
-                  {activeSignedInEmail && (
-                    <button
-                      type="button"
-                      onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
-                      className="px-2 py-1 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1"
-                      title={`View @users connected to ${activeSignedInEmail}`}
-                    >
-                      <Users className="w-3.5 h-3.5" />
-                      <span>@users</span>
-                    </button>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => setGlobalFocusSwitch(!globalFocusSwitch)}
-                    className={`px-2 py-1 rounded-lg text-xs font-medium border cursor-pointer ${
-                      globalFocusSwitch
-                        ? 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300'
-                        : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white'
-                    }`}
-                  >
-                    Focus: {globalFocusSwitch ? 'ON' : 'OFF'}
-                  </button>
-
-                  {isSharkThinking ? (
-                    <button
-                      type="button"
-                      onClick={handleCancelNerveShark}
-                      title="Cancel Nerve Shark request"
-                      className="px-2.5 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-500 rounded-lg flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                      <span>Cancel Shark</span>
-                    </button>
-                  ) : (
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={handleOpenNerveSharkChannel}
-                        className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-                      >
-                        <Code2 className="w-3.5 h-3.5" />
-                        <span>Nerve Shark</span>
-                      </button>
-                      {isSharkChannelActive && (
-                        <button
-                          type="button"
-                          onClick={handleCloseActiveChannel}
-                          title="Close Nerve Shark"
-                          aria-label="Close Nerve Shark"
-                          className="p-1 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:border-red-500 hover:text-red-500 rounded-lg cursor-pointer shrink-0"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => setIsCodeDrawerOpen(!isCodeDrawerOpen)}
-                    className="p-1.5 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black rounded-lg cursor-pointer"
-                    title="Toggle Code & Terminal Drawer"
-                  >
-                    {isCodeDrawerOpen ? (
-                      <PanelRightClose className="w-3.5 h-3.5" />
-                    ) : (
-                      <PanelRightOpen className="w-3.5 h-3.5" />
-                    )}
-                  </button>
                 </div>
               </div>
-            </div>
 
-            {/* ===============================================================
-                COMPACT WORKSPACE DASHBOARD: Top Contributors & Recent Activity
-            =============================================================== */}
-            {(peers.length > 0 || incidentReports.length > 0) && (
-              <div className="px-3 sm:px-5 py-2 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-1 bg-white dark:bg-black border border-neutral-200 dark:border-neutral-800 p-0.5 rounded-lg text-xs">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setWorkspaceDashboardTab('contributors');
-                        setShowWorkspaceDashboard(true);
-                      }}
-                      className={`px-2 py-0.5 rounded-md font-medium cursor-pointer ${
-                        workspaceDashboardTab === 'contributors' && showWorkspaceDashboard
-                          ? 'bg-blue-600 text-white'
-                          : 'text-black dark:text-white'
-                      }`}
-                    >
-                      Contributors ({peers.length})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setWorkspaceDashboardTab('prs');
-                        setShowWorkspaceDashboard(true);
-                      }}
-                      className={`px-2 py-0.5 rounded-md font-medium cursor-pointer ${
-                        workspaceDashboardTab === 'prs' && showWorkspaceDashboard
-                          ? 'bg-blue-600 text-white'
-                          : 'text-black dark:text-white'
-                      }`}
-                    >
-                      Recent Activity ({incidentReports.length})
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    {desktopNotifPermission === 'default' && (
-                      <button
-                        type="button"
-                        onClick={requestDesktopNotificationPermission}
-                        className="px-2 py-0.5 rounded-lg text-[11px] font-medium border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white flex items-center gap-1 cursor-pointer"
-                      >
-                        <Bell className="w-3 h-3 text-blue-500" />
-                        <span>Alerts</span>
-                      </button>
-                    )}
-
-                    {activeRepo && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRepositories((prev) => ({
-                            ...prev,
-                            [activeRepo.repo]: {
-                              ...prev[activeRepo.repo],
-                              ciStatus: 'Failing',
-                            },
-                          }));
-                          emitCiFailureNotification(
-                            activeRepo.repo,
-                            activeRepo.branch,
-                            activeRepo.latestCommit,
-                            `Build check failed on ${activeFile?.path || 'src/index.ts'}:L${highlightedLine || 1}.`
-                          );
-                        }}
-                        className="px-2 py-0.5 rounded-lg text-[11px] font-medium border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-300 flex items-center gap-1 cursor-pointer"
-                      >
-                        <AlertTriangle className="w-3 h-3" />
-                        <span>Test CI Fail</span>
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() => setShowWorkspaceDashboard(!showWorkspaceDashboard)}
-                      className="p-1 rounded-lg text-black dark:text-white cursor-pointer"
-                    >
-                      {showWorkspaceDashboard ? (
-                        <ChevronUp className="w-3.5 h-3.5" />
-                      ) : (
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  </div>
+              {/* Repositories Section */}
+              <div className="space-y-1.5">
+                <div className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] px-1">
+                  Repositories ({Object.keys(repositories).length})
                 </div>
-
-                {showWorkspaceDashboard && (
-                  <div>
-                    {workspaceDashboardTab === 'contributors' ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
-                        {[...peers]
-                          .sort((a, b) => b.proofOfWorkCommits - a.proofOfWorkCommits)
-                          .map((peer, rankIdx) => (
-                            <div
-                              key={peer.id}
-                              onClick={() => setSelectedPeerHandle(peer.handle)}
-                              className={`p-2 rounded-xl border transition-colors cursor-pointer flex items-center justify-between gap-2 ${
-                                activePeer?.handle === peer.handle
-                                  ? 'border-blue-500 bg-white dark:bg-black'
-                                  : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                {peer.avatarUrl ? (
-                                  <img
-                                    src={peer.avatarUrl}
-                                    alt={peer.handle}
-                                    className="w-6 h-6 rounded-full shrink-0"
-                                    referrerPolicy="no-referrer"
-                                  />
-                                ) : (
-                                  <div className="w-6 h-6 rounded-full border border-neutral-300 dark:border-neutral-700 flex items-center justify-center text-[10px] font-mono font-bold shrink-0">
-                                    {peer.avatarInitials}
-                                  </div>
-                                )}
-                                <div className="min-w-0">
-                                  <div className="text-xs font-semibold text-black dark:text-white truncate">
-                                    #{rankIdx + 1} {peer.name}
-                                  </div>
-                                  <div className="text-[10px] font-mono text-neutral-500 truncate">
-                                    @{peer.handle}
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <div className="text-right font-mono tabular-nums">
-                                  <div className="text-xs font-bold text-black dark:text-white">
-                                    {peer.proofOfWorkCommits.toLocaleString()}
-                                  </div>
-                                  <div className="text-[10px] text-emerald-600 dark:text-emerald-400">
-                                    {peer.mergedPrs} PRs
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  title={`Delete @${peer.handle}`}
-                                  onClick={(e) => handleDeleteUserPeer(peer.handle, e)}
-                                  className="p-1 rounded-md text-neutral-400 hover:text-red-500 hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                      </div>
-                    ) : incidentReports.length === 0 ? (
-                      <div className="text-xs text-neutral-500 py-1">
-                        No PR or incident activity recorded yet.
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                        {incidentReports.slice(0, 4).map((inc) => (
-                          <div
-                            key={inc.ticketId}
-                            onClick={() => {
-                              setSelectedIncidentTicketId(inc.ticketId);
-                              setActiveTab('incidents');
-                            }}
-                            className="p-2 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black flex items-center justify-between gap-2 cursor-pointer"
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
-                              <GitCommit className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                              <div className="min-w-0">
-                                <div className="text-xs font-semibold text-black dark:text-white truncate">
-                                  {inc.ticketId} · {inc.summary}
-                                </div>
-                                <div className="text-[10px] font-mono text-neutral-500 truncate">
-                                  {inc.repo} · {inc.status}
-                                </div>
-                              </div>
-                            </div>
-                            <span className="text-[10px] font-mono text-blue-600 dark:text-blue-400 shrink-0">
-                              L{inc.lineNumber} →
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                {Object.keys(repositories).length === 0 ? (
+                  <p className="text-xs text-[#656d76] dark:text-[#8b949e] px-1 leading-relaxed">
+                    Search above to track a GitHub, GitLab, or Bitbucket repository.
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    {Object.values(repositories).map((repoObj) => {
+                      const isActiveRepo = activeRepo?.repo === repoObj.repo;
+                      return (
+                        <button
+                          key={repoObj.repo}
+                          type="button"
+                          onClick={() => {
+                            const firstFile = Object.keys(repoObj.files)[0];
+                            if (firstFile) {
+                              handleNavigateDeepLink(
+                                repoObj.repo,
+                                firstFile,
+                                repoObj.files[firstFile].bugLine || 1
+                              );
+                            }
+                            setIsCodeDrawerOpen(true);
+                          }}
+                          className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-left transition-colors cursor-pointer ${
+                            isActiveRepo
+                              ? 'bg-white dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d] font-semibold text-[#1f2328] dark:text-[#e6edf3]'
+                              : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5 border border-transparent'
+                          }`}
+                        >
+                          <FolderGit2 className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] shrink-0" />
+                          <span className="font-mono truncate">{repoObj.repo}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
-            )}
+            </div>
 
+            {/* Sidebar Bottom Controls */}
+            <div className="p-3 border-t border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setGlobalFocusSwitch(!globalFocusSwitch)}
+                className={`px-2.5 py-1.5 rounded-md text-xs font-medium border cursor-pointer whitespace-nowrap transition-colors ${
+                  globalFocusSwitch
+                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                    : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5'
+                }`}
+              >
+                Focus: {globalFocusSwitch ? 'On' : 'Off'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsCodeDrawerOpen(!isCodeDrawerOpen)}
+                className="px-2.5 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                title="Toggle Code & Terminal Drawer"
+              >
+                {isCodeDrawerOpen ? (
+                  <PanelRightClose className="w-3.5 h-3.5" />
+                ) : (
+                  <PanelRightOpen className="w-3.5 h-3.5" />
+                )}
+                <span>Code</span>
+              </button>
+            </div>
+          </aside>
+
+          {/* =================================================================
+              CENTER PANE: Welcome Home OR Active Chat / Nerve Shark Chatbox
+          ================================================================= */}
+          <section className="flex-1 bg-white dark:bg-[#0d1117] flex flex-col justify-between min-w-0">
             {/* Chat Stream Body */}
             {!activePeer && !isSharkChannelActive ? (
-              <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
-                <div className="max-w-sm space-y-2">
-                  <h3 className="text-sm font-bold text-black dark:text-white">
-                    {peers.length > 0
-                      ? 'Select a Contributor'
-                      : 'Add a Peer or Repository Channel'}
-                  </h3>
-                  <p className="text-xs text-black/70 dark:text-white/70">
-                    {peers.length > 0
-                      ? 'Signing in does not automatically select a contributor. Pick a contributor above or enter `+ @peer-handle` to open an E2EE P2P channel.'
-                      : 'Search any repository channel (GitHub, GitLab, Bitbucket, or custom Git remote) above or enter `+ @peer-handle` to open an E2EE P2P channel.'}
-                  </p>
-                  {activeSignedInEmail && (
-                    <div className="pt-1">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
-                        className="inline-flex items-center gap-1.5 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                      >
-                        <Users className="w-3.5 h-3.5" />
-                        <span>View @users connected to {activeSignedInEmail}</span>
-                      </button>
+              <div className="flex-1 overflow-y-auto p-6 sm:p-8">
+                <div className="max-w-3xl mx-auto space-y-6">
+                  <div className="space-y-1.5">
+                    <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[#1f2328] dark:text-[#e6edf3]">
+                      {isAuthenticated ? `Welcome back, ${authenticatedDisplayName}` : 'Welcome to Nerve'}
+                    </h1>
+                    <p className="text-sm text-[#656d76] dark:text-[#8b949e] max-w-xl">
+                      Ask Nerve Shark how anything works, track a repository to inspect code and run tests, or message teammates over end-to-end encrypted P2P chat.
+                    </p>
+                  </div>
+
+                  {/* 3 Clear GitHub-Style Action Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedPeerHandle('nerve-shark');
+                        setTimeout(() => chatComposerInputRef.current?.focus(), 0);
+                      }}
+                      className="text-left p-4 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] hover:border-blue-500 transition-colors cursor-pointer space-y-2"
+                    >
+                      <Sparkles className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                      <div className="space-y-0.5">
+                        <div className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                          Ask Nerve Shark
+                        </div>
+                        <p className="text-xs text-[#656d76] dark:text-[#8b949e] leading-relaxed">
+                          Chat in plain English to learn Nerve, review code, or fix bugs.
+                        </p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => githubSearchInputRef.current?.focus()}
+                      className="text-left p-4 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] hover:border-blue-500 transition-colors cursor-pointer space-y-2"
+                    >
+                      <FolderGit2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                      <div className="space-y-0.5">
+                        <div className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                          Track a Repository
+                        </div>
+                        <p className="text-xs text-[#656d76] dark:text-[#8b949e] leading-relaxed">
+                          Search GitHub, GitLab, or Bitbucket repos to browse files and run tests.
+                        </p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowBugModal(true)}
+                      className="text-left p-4 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] hover:border-blue-500 transition-colors cursor-pointer space-y-2"
+                    >
+                      <GitPullRequest className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                      <div className="space-y-0.5">
+                        <div className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                          Report an Issue
+                        </div>
+                        <p className="text-xs text-[#656d76] dark:text-[#8b949e] leading-relaxed">
+                          Log a bug with file and line context or open the incident pipeline.
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Recent Activity & Contributors Feed */}
+                  {(peers.length > 0 || incidentReports.length > 0) && (
+                    <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] overflow-hidden">
+                      <div className="px-4 py-2.5 bg-[#f6f8fa] dark:bg-[#161b22] border-b border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-3 text-xs font-medium">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWorkspaceDashboardTab('contributors');
+                              setShowWorkspaceDashboard(true);
+                            }}
+                            className={`cursor-pointer ${
+                              workspaceDashboardTab === 'contributors'
+                                ? 'text-[#1f2328] dark:text-[#e6edf3] font-semibold'
+                                : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
+                            }`}
+                          >
+                            Contributors ({peers.length})
+                          </button>
+                          <span className="text-[#d0d7de] dark:text-[#30363d]">·</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWorkspaceDashboardTab('prs');
+                              setShowWorkspaceDashboard(true);
+                            }}
+                            className={`cursor-pointer ${
+                              workspaceDashboardTab === 'prs'
+                                ? 'text-[#1f2328] dark:text-[#e6edf3] font-semibold'
+                                : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
+                            }`}
+                          >
+                            Recent Incidents ({incidentReports.length})
+                          </button>
+                        </div>
+
+                        {desktopNotifPermission === 'default' && (
+                          <button
+                            type="button"
+                            onClick={requestDesktopNotificationPermission}
+                            className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                          >
+                            <Bell className="w-3.5 h-3.5" />
+                            <span>Enable Alerts</span>
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="divide-y divide-[#d0d7de] dark:divide-[#30363d] bg-white dark:bg-[#0d1117]">
+                        {workspaceDashboardTab === 'contributors' ? (
+                          peers.length === 0 ? (
+                            <div className="p-4 text-xs text-[#656d76] dark:text-[#8b949e]">
+                              No peers added yet. Add a handle in Direct Messages on the left.
+                            </div>
+                          ) : (
+                            [...peers]
+                              .sort((a, b) => b.proofOfWorkCommits - a.proofOfWorkCommits)
+                              .map((peer) => (
+                                <div
+                                  key={peer.id}
+                                  onClick={() => setSelectedPeerHandle(peer.handle)}
+                                  className="px-4 py-2.5 flex items-center justify-between gap-3 hover:bg-[#f6f8fa] dark:hover:bg-[#161b22] cursor-pointer transition-colors"
+                                >
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    {peer.avatarUrl ? (
+                                      <img
+                                        src={peer.avatarUrl}
+                                        alt={peer.handle}
+                                        className="w-6 h-6 rounded-full shrink-0"
+                                        referrerPolicy="no-referrer"
+                                      />
+                                    ) : (
+                                      <div className="w-6 h-6 rounded-full bg-[#e6ebf1] dark:bg-[#30363d] flex items-center justify-center text-[10px] font-mono font-bold shrink-0">
+                                        {peer.avatarInitials}
+                                      </div>
+                                    )}
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                                        {peer.name}
+                                      </div>
+                                      <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e] truncate">
+                                        @{peer.handle}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="text-right font-mono text-xs tabular-nums text-[#656d76] dark:text-[#8b949e] shrink-0">
+                                    {peer.proofOfWorkCommits.toLocaleString()} commits · {peer.mergedPrs} PRs
+                                  </div>
+                                </div>
+                              ))
+                          )
+                        ) : incidentReports.length === 0 ? (
+                          <div className="p-4 text-xs text-[#656d76] dark:text-[#8b949e]">
+                            No incidents logged yet. Click New Issue to open one.
+                          </div>
+                        ) : (
+                          incidentReports.slice(0, 5).map((inc) => (
+                            <div
+                              key={inc.ticketId}
+                              onClick={() => {
+                                setSelectedIncidentTicketId(inc.ticketId);
+                                setActiveTab('incidents');
+                              }}
+                              className="px-4 py-2.5 flex items-center justify-between gap-3 hover:bg-[#f6f8fa] dark:hover:bg-[#161b22] cursor-pointer transition-colors"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <GitCommit className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                                <div className="min-w-0">
+                                  <div className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                                    {inc.ticketId} · {inc.summary}
+                                  </div>
+                                  <div className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e] truncate">
+                                    {inc.repo} · {inc.status}
+                                  </div>
+                                </div>
+                              </div>
+                              <span className="text-xs font-mono text-blue-600 dark:text-blue-400 shrink-0">
+                                L{inc.lineNumber} →
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -5186,13 +5216,13 @@ export default function App() {
             ) : !isSharkChannelActive && !hasProofOfWork ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
                 <ShieldAlert className="w-6 h-6 text-red-500" />
-                <h3 className="text-xs font-bold text-black dark:text-white">
+                <h3 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
                   Blocked by Proof-of-Work Gate (&lt;15 Commits)
                 </h3>
                 <button
                   type="button"
                   onClick={handleCloseActiveChannel}
-                  className="px-3 py-1.5 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 rounded-lg flex items-center gap-1 cursor-pointer"
+                  className="px-3 py-1.5 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] rounded-md flex items-center gap-1 cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />
                   <span>Close</span>
@@ -5201,13 +5231,13 @@ export default function App() {
             ) : !isSharkChannelActive && !isMutualFollow && activePeer ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
                 <Lock className="w-6 h-6 text-amber-500" />
-                <h3 className="text-xs font-bold text-black dark:text-white">
+                <h3 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
                   Mutual Follow Required with @{activePeer.handle}
                 </h3>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleToggleFollowPeer(activePeer.handle)}
-                    className="px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1.5 cursor-pointer"
+                    className="px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md flex items-center gap-1.5 cursor-pointer"
                   >
                     <UserPlus className="w-3.5 h-3.5" />
                     <span>Follow @{activePeer.handle}</span>
@@ -5215,7 +5245,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleCloseActiveChannel}
-                    className="px-3 py-1.5 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 rounded-lg flex items-center gap-1 cursor-pointer"
+                    className="px-3 py-1.5 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] rounded-md flex items-center gap-1 cursor-pointer"
                   >
                     <X className="w-3.5 h-3.5" />
                     <span>Close</span>
@@ -5225,7 +5255,7 @@ export default function App() {
             ) : !isSharkChannelActive && (globalFocusSwitch || activePeer?.focusModeOptOut) ? (
               <div className="flex-1 p-6 flex flex-col items-center justify-center text-center space-y-3">
                 <SlidersHorizontal className="w-6 h-6 text-blue-500" />
-                <h3 className="text-xs font-bold text-black dark:text-white">
+                <h3 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
                   {globalFocusSwitch
                     ? 'Focus Mode Active'
                     : `${activePeer?.name || 'Peer'} is in Focus Mode`}
@@ -5234,7 +5264,7 @@ export default function App() {
                   {globalFocusSwitch && (
                     <button
                       onClick={() => setGlobalFocusSwitch(false)}
-                      className="px-3.5 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
+                      className="px-3.5 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-md cursor-pointer"
                     >
                       Resume
                     </button>
@@ -5242,7 +5272,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleCloseActiveChannel}
-                    className="px-3 py-1.5 text-xs font-medium text-black dark:text-white border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 rounded-lg flex items-center gap-1 cursor-pointer"
+                    className="px-3 py-1.5 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] rounded-md flex items-center gap-1 cursor-pointer"
                   >
                     <X className="w-3.5 h-3.5" />
                     <span>Close</span>
@@ -5251,478 +5281,550 @@ export default function App() {
               </div>
             ) : (
               <div className="flex-1 flex flex-col min-h-0">
-                {/* Active Channel Bar & In-Chat Message Search */}
-                <div className="px-3 sm:px-5 py-2 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black flex items-center gap-2">
-                  <span className="text-[11px] font-mono font-semibold text-black dark:text-white whitespace-nowrap shrink-0">
-                    {isSharkChannelActive ? 'Nerve Shark' : `@${activePeer?.handle || 'peer'}`}
-                  </span>
-                  <div className="relative flex-1 min-w-0">
-                    <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    <input
-                      type="text"
-                      value={chatMessageSearchQuery}
-                      onChange={(e) => setChatMessageSearchQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape' && chatMessageSearchQuery) {
-                          setChatMessageSearchQuery('');
-                        }
-                      }}
-                      aria-label="Search past messages in selected chat"
-                      placeholder={
-                        isSharkChannelActive
-                          ? 'Search messages in Nerve Shark...'
-                          : `Search past messages with @${activePeer?.handle || 'peer'}...`
-                      }
-                      className="w-full pl-8 pr-7 py-1.5 text-xs rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white placeholder:text-neutral-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    />
-                    {chatMessageSearchQuery && (
-                      <button
-                        type="button"
-                        onClick={() => setChatMessageSearchQuery('')}
-                        aria-label="Clear message search"
-                        title="Clear search"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-neutral-400 hover:text-black dark:hover:text-white cursor-pointer"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
+                {/* Active Channel Header */}
+                <div className="px-4 py-2.5 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {isSharkChannelActive ? (
+                      <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                    ) : (
+                      <MessageSquare className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                     )}
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                        {isSharkChannelActive ? 'Nerve Shark' : `@${activePeer?.handle || 'peer'}`}
+                      </div>
+                      <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] truncate">
+                        {isSharkChannelActive
+                          ? 'AI Chatbox & Code Guide · Type /exit to close'
+                          : 'End-to-end encrypted P2P chat (AES-GCM-256)'}
+                      </div>
+                    </div>
                   </div>
-                  {trimmedChatSearch && (
-                    <span className="text-[11px] font-mono text-black/70 dark:text-white/70 whitespace-nowrap shrink-0 tabular-nums">
-                      {filteredCurrentMessages.length} / {currentMessages.length}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={handleCloseActiveChannel}
-                    title={isSharkChannelActive ? 'Close Nerve Shark (or type /exit)' : 'Close chat (or type /exit)'}
-                    aria-label={isSharkChannelActive ? 'Close Nerve Shark' : 'Close chat'}
-                    className="px-2 py-1 text-[11px] font-medium text-black/80 dark:text-white/80 hover:text-red-600 dark:hover:text-red-400 border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black rounded-lg flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    <X className="w-3 h-3" />
-                    <span>Close</span>
-                  </button>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div className="relative hidden sm:block w-48 lg:w-56">
+                      <Search className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={chatMessageSearchQuery}
+                        onChange={(e) => setChatMessageSearchQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape' && chatMessageSearchQuery) {
+                            setChatMessageSearchQuery('');
+                          }
+                        }}
+                        aria-label="Search past messages in selected chat"
+                        placeholder="Search messages..."
+                        className="w-full pl-8 pr-6 py-1 text-xs rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      {chatMessageSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setChatMessageSearchQuery('')}
+                          aria-label="Clear message search"
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                    {trimmedChatSearch && (
+                      <span className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e] tabular-nums">
+                        {filteredCurrentMessages.length}/{currentMessages.length}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleCloseActiveChannel}
+                      title={isSharkChannelActive ? 'Close Nerve Shark (or type /exit)' : 'Close chat (or type /exit)'}
+                      aria-label={isSharkChannelActive ? 'Close Nerve Shark' : 'Close chat'}
+                      className="px-2.5 py-1 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] hover:text-red-600 dark:hover:text-red-400 border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] rounded-md flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Close</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="flex-1 p-3 sm:p-5 space-y-3 overflow-y-auto max-h-[calc(100vh-255px)]">
+                {/* Message Stream */}
+                <div className="flex-1 p-4 sm:p-6 space-y-3.5 overflow-y-auto max-h-[calc(100vh-235px)]">
                   {currentMessages.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-xs text-black/60 dark:text-white/60 py-12">
-                      {isSharkChannelActive
-                        ? 'Nerve Shark channel active. Ask a question, paste `owner/repo#branch/file:L10`, or run `/bug`.'
-                        : `E2EE channel open with @${activePeer?.handle || 'peer'} (AES-GCM-256). Send a message, \`owner/repo#branch/file:L10\`, \`@shark\`, or \`/bug\`.`}
-                    </div>
+                    isSharkChannelActive ? (
+                      <div className="max-w-xl mx-auto py-8 space-y-5">
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2 text-[#1f2328] dark:text-[#e6edf3]">
+                            <Sparkles className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                            <h2 className="text-base font-bold">Ask Nerve Shark anything</h2>
+                          </div>
+                          <p className="text-xs sm:text-sm text-[#656d76] dark:text-[#8b949e] leading-relaxed">
+                            Use me as an everyday chatbox to learn how Nerve works, or ask me to review files, debug stack traces, and generate code patches.
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {[
+                            'How do I use Nerve?',
+                            'How do I track a GitHub repo and run tests?',
+                            'How do E2EE peer chats and /bug tickets work?',
+                            'Review the open file and suggest improvements',
+                          ].map((starterPrompt) => (
+                            <button
+                              key={starterPrompt}
+                              type="button"
+                              onClick={() => void handleSendMessage(undefined, starterPrompt)}
+                              className="text-left px-3 py-2.5 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] hover:border-blue-500 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] transition-colors cursor-pointer"
+                            >
+                              {starterPrompt}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-xs text-[#656d76] dark:text-[#8b949e] py-12 text-center max-w-md mx-auto">
+                        End-to-end encrypted chat open with @{activePeer?.handle || 'peer'}. Send a message, paste `owner/repo#branch/file:L10`, tag `@shark`, or run `/bug`.
+                      </div>
+                    )
                   ) : filteredCurrentMessages.length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center gap-2 text-center py-12">
-                      <p className="text-xs text-black/60 dark:text-white/60">
-                        No past messages matching &quot;{trimmedChatSearch}&quot;.
+                      <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
+                        No messages matching &quot;{trimmedChatSearch}&quot;.
                       </p>
                       <button
                         type="button"
                         onClick={() => setChatMessageSearchQuery('')}
-                        className="px-2.5 py-1 rounded-lg text-[11px] font-medium border border-neutral-200 dark:border-neutral-800 text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer whitespace-nowrap shrink-0"
+                        className="px-2.5 py-1 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#161b22] cursor-pointer"
                       >
                         Clear search
                       </button>
                     </div>
                   ) : (
                     filteredCurrentMessages.map((msg) => (
-                    <div
-                      key={msg.id}
-                      className={`relative group rounded-xl border p-3.5 space-y-2 max-w-2xl ${
-                        msg.senderRole === 'copilot'
-                          ? 'border-blue-500 bg-white dark:bg-black'
-                          : msg.senderRole === 'self'
-                          ? 'ml-auto border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black'
-                          : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between text-xs text-black/70 dark:text-white/70 gap-2">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="font-semibold text-black dark:text-white truncate">
-                            {msg.senderName}
-                          </span>
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 shrink-0">
-                            E2EE
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <span className="font-mono text-[11px] mr-1">
-                            {msg.timestamp}
-                            {msg.edited ? ' · edited' : ''}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleStartEditMessage(msg);
-                            }}
-                            title="Edit message"
-                            aria-label="Edit message"
-                            className="p-1 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white cursor-pointer"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveReactionPickerMessageId(null);
-                              setEditingMessageId(null);
-                              setConfirmDeleteMessageId((prev) =>
-                                prev === msg.id ? null : msg.id
-                              );
-                            }}
-                            title="Delete message"
-                            aria-label="Delete message"
-                            className="p-1 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black/70 dark:text-white/70 hover:text-red-500 cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setConfirmDeleteMessageId(null);
-                              setActiveReactionPickerMessageId((prev) =>
-                                prev === msg.id ? null : msg.id
-                              );
-                            }}
-                            title="Add reaction emoji"
-                            className="p-1 rounded-md hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white cursor-pointer"
-                            aria-label="Add reaction emoji"
-                          >
-                            <Smile className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {editingMessageId === msg.id ? (
-                        <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
-                          <textarea
-                            rows={2}
-                            value={editingMessageText}
-                            onChange={(e) => setEditingMessageText(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault();
-                                handleSaveEditMessage(msg.id);
-                              } else if (e.key === 'Escape') {
-                                setEditingMessageId(null);
-                                setEditingMessageText('');
-                              }
-                            }}
-                            className="w-full px-3 py-2 text-xs sm:text-sm rounded-lg border border-blue-500 bg-white dark:bg-black text-black dark:text-white focus:outline-none"
-                            autoFocus
-                          />
-                          <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingMessageId(null);
-                                setEditingMessageText('');
-                              }}
-                              className="px-2.5 py-1 rounded-lg text-[11px] font-medium border border-neutral-200 dark:border-neutral-800 text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer whitespace-nowrap shrink-0"
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleSaveEditMessage(msg.id)}
-                              disabled={!editingMessageText.trim()}
-                              className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white cursor-pointer whitespace-nowrap shrink-0"
-                            >
-                              Save
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-xs sm:text-sm text-black dark:text-white leading-relaxed">
-                          {renderHighlightedMessageText(msg.text, trimmedChatSearch)}
-                        </p>
-                      )}
-
-                      {confirmDeleteMessageId === msg.id && (
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-lg border border-red-500/30 bg-red-500/5 text-xs"
-                        >
-                          <span className="text-[11px] text-black/80 dark:text-white/80">
-                            Delete this message?
-                          </span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteMessage(msg.id, 'me')}
-                              className="px-2 py-1 rounded-md text-[11px] font-medium border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer whitespace-nowrap shrink-0"
-                            >
-                              Delete for me
-                            </button>
-                            {canOpenP2PChannel && activePeer && (
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteMessage(msg.id, 'both')}
-                                className="px-2 py-1 rounded-md text-[11px] font-semibold bg-red-600 hover:bg-red-500 text-white cursor-pointer whitespace-nowrap shrink-0"
-                              >
-                                Delete for both
-                              </button>
+                      <div
+                        key={msg.id}
+                        className={`relative group rounded-lg border p-3.5 space-y-2 max-w-2xl ${
+                          msg.senderRole === 'copilot'
+                            ? 'border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22]'
+                            : msg.senderRole === 'self'
+                            ? 'ml-auto border-blue-200 dark:border-blue-900/60 bg-blue-50/60 dark:bg-[#13233a]'
+                            : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-xs text-[#656d76] dark:text-[#8b949e] gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {msg.senderRole === 'copilot' && (
+                              <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
                             )}
+                            <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                              {msg.senderName}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className="font-mono text-[11px] mr-1">
+                              {msg.timestamp}
+                              {msg.edited ? ' · edited' : ''}
+                            </span>
                             <button
                               type="button"
-                              onClick={() => setConfirmDeleteMessageId(null)}
-                              className="px-2 py-1 rounded-md text-[11px] text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer whitespace-nowrap shrink-0"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleStartEditMessage(msg);
+                              }}
+                              title="Edit message"
+                              aria-label="Edit message"
+                              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
                             >
-                              Cancel
+                              <Edit3 className="w-3.5 h-3.5" />
                             </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Interactive Reactions Display & Emoji Picker Directly Beneath Message Text */}
-                      <div className="space-y-1.5 pt-0.5">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          {msg.reactions &&
-                            msg.reactions.map((reaction) => {
-                              const hasReacted = reaction.users.includes(currentSenderHandle);
-                              const userList = reaction.users
-                                .map((u) => (u === currentSenderHandle ? 'You' : `@${u}`))
-                                .join(', ');
-
-                              return (
-                                <button
-                                  key={reaction.emoji}
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleToggleMessageReaction(msg.id, reaction.emoji);
-                                  }}
-                                  title={`Reacted by: ${userList} (${hasReacted ? 'Click to remove' : 'Click to add'})`}
-                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition-colors cursor-pointer border ${
-                                    hasReacted
-                                      ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-500 text-blue-700 dark:text-blue-300 font-semibold'
-                                      : 'bg-neutral-100 dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800 text-black/80 dark:text-white/80 hover:bg-neutral-200/80 dark:hover:bg-neutral-800/80'
-                                  }`}
-                                >
-                                  <span className="text-sm leading-none">{reaction.emoji}</span>
-                                  <span className="font-mono text-[11px] font-medium leading-none">
-                                    {reaction.count}
-                                  </span>
-                                </button>
-                              );
-                            })}
-
-                          {/* Quick reaction trigger button (Smile +) */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setActiveReactionPickerMessageId((prev) =>
-                                prev === msg.id ? null : msg.id
-                              );
-                            }}
-                            title="Choose reaction emoji"
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border transition-colors cursor-pointer ${
-                              activeReactionPickerMessageId === msg.id
-                                ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-300 font-semibold'
-                                : 'border-dashed border-neutral-300 dark:border-neutral-700 text-black/70 dark:text-white/70 hover:text-black dark:hover:text-white hover:border-neutral-400 dark:hover:border-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-900'
-                            }`}
-                          >
-                            <Smile className="w-3.5 h-3.5" />
-                            <span>+</span>
-                          </button>
-                        </div>
-
-                        {/* Responsive Inline Emoji Picker Tray directly beneath message */}
-                        {activeReactionPickerMessageId === msg.id && (
-                          <div
-                            className="w-full max-w-full flex flex-wrap items-center justify-between gap-1.5 p-2 rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-black shadow-lg z-30 transition-all"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <div className="flex flex-wrap items-center gap-1 flex-1 min-w-0">
-                              {QUICK_REACTION_EMOJIS.map((emoji) => {
-                                const hasReacted = msg.reactions?.some(
-                                  (r) => r.emoji === emoji && r.users.includes(currentSenderHandle)
-                                );
-                                return (
-                                  <button
-                                    key={emoji}
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleToggleMessageReaction(msg.id, emoji);
-                                      setActiveReactionPickerMessageId(null);
-                                    }}
-                                    className={`w-7 h-7 flex items-center justify-center rounded-lg text-base transition-transform hover:scale-110 shrink-0 cursor-pointer ${
-                                      hasReacted
-                                        ? 'bg-blue-100 dark:bg-blue-900/60 ring-1 ring-blue-500'
-                                        : 'hover:bg-neutral-100 dark:hover:bg-neutral-900'
-                                    }`}
-                                    title={`React with ${emoji}`}
-                                  >
-                                    {emoji}
-                                  </button>
-                                );
-                              })}
-                            </div>
                             <button
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setActiveReactionPickerMessageId(null);
+                                setEditingMessageId(null);
+                                setConfirmDeleteMessageId((prev) =>
+                                  prev === msg.id ? null : msg.id
+                                );
                               }}
-                              className="w-6 h-6 flex items-center justify-center rounded-lg text-neutral-400 hover:text-black dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer ml-auto text-xs shrink-0"
-                              title="Close emoji picker"
+                              title="Delete message"
+                              aria-label="Delete message"
+                              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-[#656d76] dark:text-[#8b949e] hover:text-red-500 cursor-pointer"
                             >
-                              <X className="w-3.5 h-3.5" />
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmDeleteMessageId(null);
+                                setActiveReactionPickerMessageId((prev) =>
+                                  prev === msg.id ? null : msg.id
+                                );
+                              }}
+                              title="Add reaction emoji"
+                              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                              aria-label="Add reaction emoji"
+                            >
+                              <Smile className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {editingMessageId === msg.id ? (
+                          <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+                            <textarea
+                              rows={2}
+                              value={editingMessageText}
+                              onChange={(e) => setEditingMessageText(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  handleSaveEditMessage(msg.id);
+                                } else if (e.key === 'Escape') {
+                                  setEditingMessageId(null);
+                                  setEditingMessageText('');
+                                }
+                              }}
+                              className="w-full px-3 py-2 text-xs sm:text-sm rounded-md border border-blue-500 bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none"
+                              autoFocus
+                            />
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingMessageId(null);
+                                  setEditingMessageText('');
+                                }}
+                                className="px-2.5 py-1 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSaveEditMessage(msg.id)}
+                                disabled={!editingMessageText.trim()}
+                                className="px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white cursor-pointer"
+                              >
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-xs sm:text-sm text-[#1f2328] dark:text-[#e6edf3] leading-relaxed whitespace-pre-wrap">
+                            {renderHighlightedMessageText(msg.text, trimmedChatSearch)}
+                          </p>
+                        )}
+
+                        {confirmDeleteMessageId === msg.id && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-md border border-red-500/30 bg-red-500/5 text-xs"
+                          >
+                            <span className="text-[#1f2328] dark:text-[#e6edf3]">
+                              Delete this message?
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteMessage(msg.id, 'me')}
+                                className="px-2 py-1 rounded text-[11px] font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] cursor-pointer"
+                              >
+                                Delete for me
+                              </button>
+                              {canOpenP2PChannel && activePeer && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteMessage(msg.id, 'both')}
+                                  className="px-2 py-1 rounded text-[11px] font-semibold bg-red-600 hover:bg-red-500 text-white cursor-pointer"
+                                >
+                                  Delete for both
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteMessageId(null)}
+                                className="px-2 py-1 rounded text-[11px] text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Interactive Reactions */}
+                        <div className="space-y-1.5 pt-0.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {msg.reactions &&
+                              msg.reactions.map((reaction) => {
+                                const hasReacted = reaction.users.includes(currentSenderHandle);
+                                const userList = reaction.users
+                                  .map((u) => (u === currentSenderHandle ? 'You' : `@${u}`))
+                                  .join(', ');
+
+                                return (
+                                  <button
+                                    key={reaction.emoji}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleToggleMessageReaction(msg.id, reaction.emoji);
+                                    }}
+                                    title={`Reacted by: ${userList}`}
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition-colors cursor-pointer border ${
+                                      hasReacted
+                                        ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-500 text-blue-700 dark:text-blue-300 font-semibold'
+                                        : 'bg-white dark:bg-[#0d1117] border-[#d0d7de] dark:border-[#30363d] text-[#656d76] dark:text-[#8b949e]'
+                                    }`}
+                                  >
+                                    <span className="text-sm leading-none">{reaction.emoji}</span>
+                                    <span className="font-mono text-[11px] font-medium leading-none">
+                                      {reaction.count}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveReactionPickerMessageId((prev) =>
+                                  prev === msg.id ? null : msg.id
+                                );
+                              }}
+                              title="Choose reaction emoji"
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border transition-colors cursor-pointer ${
+                                activeReactionPickerMessageId === msg.id
+                                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-300 font-semibold'
+                                  : 'border-dashed border-[#d0d7de] dark:border-[#30363d] text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
+                              }`}
+                            >
+                              <Smile className="w-3.5 h-3.5" />
+                              <span>+</span>
+                            </button>
+                          </div>
+
+                          {activeReactionPickerMessageId === msg.id && (
+                            <div
+                              className="w-full max-w-full flex flex-wrap items-center justify-between gap-1.5 p-2 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] shadow-lg z-30"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div className="flex flex-wrap items-center gap-1 flex-1 min-w-0">
+                                {QUICK_REACTION_EMOJIS.map((emoji) => {
+                                  const hasReacted = msg.reactions?.some(
+                                    (r) => r.emoji === emoji && r.users.includes(currentSenderHandle)
+                                  );
+                                  return (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleToggleMessageReaction(msg.id, emoji);
+                                        setActiveReactionPickerMessageId(null);
+                                      }}
+                                      className={`w-7 h-7 flex items-center justify-center rounded text-base transition-transform hover:scale-110 shrink-0 cursor-pointer ${
+                                        hasReacted
+                                          ? 'bg-blue-100 dark:bg-blue-900/60 ring-1 ring-blue-500'
+                                          : 'hover:bg-black/5 dark:hover:bg-white/10'
+                                      }`}
+                                      title={`React with ${emoji}`}
+                                    >
+                                      {emoji}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveReactionPickerMessageId(null);
+                                }}
+                                className="w-6 h-6 flex items-center justify-center rounded text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer ml-auto shrink-0"
+                                title="Close emoji picker"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {msg.parsedLinks &&
+                          msg.parsedLinks.map((link, idx) => (
+                            <div
+                              key={`${msg.id}-link-${idx}`}
+                              className="rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] p-2.5 flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] font-mono truncate">
+                                  {link.filePath}:{link.lineNumber}
+                                </div>
+                                <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] font-mono truncate">
+                                  {link.repo}#{link.branch}
+                                </div>
+                              </div>
+                              <button
+                                onClick={() =>
+                                  handleNavigateDeepLink(link.repo, link.filePath, link.lineNumber)
+                                }
+                                className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-md flex items-center gap-1 shrink-0 cursor-pointer"
+                              >
+                                <FolderGit2 className="w-3 h-3" />
+                                <span>L{link.lineNumber}</span>
+                              </button>
+                            </div>
+                          ))}
+
+                        {msg.incidentTicket && (
+                          <div className="rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] p-2.5 space-y-2">
+                            <div className="flex items-center justify-between text-xs font-mono">
+                              <span className="font-semibold text-red-600 dark:text-red-400">
+                                {msg.incidentTicket.ticketId} · {msg.incidentTicket.status}
+                              </span>
+                              <span className="text-[#656d76] dark:text-[#8b949e]">
+                                L{msg.incidentTicket.lineNumber}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                onClick={() =>
+                                  handleResolveIncidentWithPR(msg.incidentTicket!.ticketId)
+                                }
+                                className="px-2.5 py-1 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 rounded-md flex items-center gap-1 cursor-pointer"
+                              >
+                                <GitPullRequest className="w-3 h-3" />
+                                <span>
+                                  {msg.incidentTicket.status.includes('Resolved')
+                                    ? 'Merged'
+                                    : 'Push PR'}
+                                </span>
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  setSelectedIncidentTicketId(msg.incidentTicket!.ticketId);
+                                  setActiveTab('incidents');
+                                }}
+                                className="px-2.5 py-1 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] rounded-md cursor-pointer"
+                              >
+                                Open Pipeline →
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {msg.sharedCodeSnippet && (
+                          <div className="rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] overflow-hidden">
+                            <div className="px-2.5 py-1.5 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex items-center justify-between gap-2 text-[11px] font-mono">
+                              <div className="flex items-center gap-1.5 truncate">
+                                <Code2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                                <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                                  {msg.sharedCodeSnippet.filePath}
+                                </span>
+                                <span className="text-[#656d76] dark:text-[#8b949e]">
+                                  · {msg.sharedCodeSnippet.language}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleNavigateDeepLink(
+                                    msg.sharedCodeSnippet!.repo,
+                                    msg.sharedCodeSnippet!.filePath,
+                                    msg.sharedCodeSnippet!.highlightedLine
+                                  )
+                                }
+                                className="text-blue-600 dark:text-blue-400 hover:underline shrink-0 cursor-pointer"
+                              >
+                                Inspect L{msg.sharedCodeSnippet.highlightedLine}
+                              </button>
+                            </div>
+                            <div className="p-2 overflow-x-auto font-mono text-[11px] leading-relaxed">
+                              {msg.sharedCodeSnippet.lines.map((snippetLine, sIdx) => {
+                                const lineNum = msg.sharedCodeSnippet!.startLine + sIdx;
+                                const isHighlighted =
+                                  lineNum === msg.sharedCodeSnippet!.highlightedLine;
+                                const snippetLang = detectCodeLanguage(
+                                  msg.sharedCodeSnippet!.filePath,
+                                  msg.sharedCodeSnippet!.language
+                                );
+                                return (
+                                  <div
+                                    key={lineNum}
+                                    className={`flex items-start gap-2.5 px-1.5 py-0.5 rounded ${
+                                      isHighlighted ? 'bg-red-500/20 font-semibold' : ''
+                                    }`}
+                                  >
+                                    <span className="w-6 text-right text-[#656d76] dark:text-[#8b949e] select-none tabular-nums shrink-0">
+                                      {lineNum}
+                                    </span>
+                                    <span className="whitespace-pre">
+                                      {renderSyntaxHighlightedLine(snippetLine, snippetLang.id)}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {msg.copilotPatch && msg.copilotPatch.suggestedPatch && (
+                          <div className="rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] p-3 space-y-2">
+                            <pre className="text-xs font-mono text-emerald-700 dark:text-emerald-400 overflow-x-auto leading-relaxed">
+                              {msg.copilotPatch.suggestedPatch}
+                            </pre>
+                            <button
+                              onClick={() => handleApplyPatchToCodespace(msg.id)}
+                              className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-md cursor-pointer"
+                            >
+                              {msg.copilotPatch.applied || patchApplied
+                                ? 'Patch Applied'
+                                : 'Apply Suggested Fix'}
                             </button>
                           </div>
                         )}
-                      </div>
 
-                      {msg.parsedLinks &&
-                        msg.parsedLinks.map((link, idx) => (
-                          <div
-                            key={`${msg.id}-link-${idx}`}
-                            className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black p-2.5 flex items-center justify-between gap-2"
-                          >
-                            <div className="min-w-0">
-                              <div className="text-xs font-semibold text-black dark:text-white font-mono truncate">
-                                {link.filePath}:{link.lineNumber}
-                              </div>
-                              <div className="text-[11px] text-black/70 dark:text-white/70 font-mono truncate">
-                                {link.repo}#{link.branch}
-                              </div>
-                            </div>
-                            <button
-                              onClick={() =>
-                                handleNavigateDeepLink(link.repo, link.filePath, link.lineNumber)
-                              }
-                              className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg flex items-center gap-1 shrink-0 cursor-pointer"
-                            >
-                              <FolderGit2 className="w-3 h-3" />
-                              <span>L{link.lineNumber}</span>
-                            </button>
-                          </div>
-                        ))}
-
-                      {msg.incidentTicket && (
-                        <div className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black p-2.5 space-y-2">
-                          <div className="flex items-center justify-between text-xs font-mono">
-                            <span className="font-semibold text-red-600 dark:text-red-400">
-                              {msg.incidentTicket.ticketId} · {msg.incidentTicket.status}
-                            </span>
-                            <span className="text-black/70 dark:text-white/70">
-                              L{msg.incidentTicket.lineNumber}
-                            </span>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              onClick={() =>
-                                handleResolveIncidentWithPR(msg.incidentTicket!.ticketId)
-                              }
-                              className="px-2.5 py-1 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg flex items-center gap-1 cursor-pointer"
-                            >
-                              <GitPullRequest className="w-3 h-3" />
-                              <span>
-                                {msg.incidentTicket.status.includes('Resolved')
-                                  ? 'Merged'
-                                  : 'Push PR'}
-                              </span>
-                            </button>
-
-                            <button
-                              onClick={() => {
-                                setSelectedIncidentTicketId(msg.incidentTicket!.ticketId);
-                                setActiveTab('incidents');
-                              }}
-                              className="px-2.5 py-1 text-xs font-medium text-black dark:text-white bg-white dark:bg-black border border-neutral-200 dark:border-neutral-800 rounded-lg cursor-pointer"
-                            >
-                              Pipeline →
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {msg.sharedCodeSnippet && (
-                        <div className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black overflow-hidden">
-                          <div className="px-2.5 py-1.5 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-2 text-[11px] font-mono">
-                            <div className="flex items-center gap-1.5 truncate">
-                              <Code2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                              <span className="font-semibold text-black dark:text-white truncate">
-                                {msg.sharedCodeSnippet.filePath}
-                              </span>
-                              <span className="px-1.5 py-0.5 rounded text-[10px] border border-neutral-200 dark:border-neutral-800 text-black/70 dark:text-white/70">
-                                {msg.sharedCodeSnippet.language}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleNavigateDeepLink(
-                                  msg.sharedCodeSnippet!.repo,
-                                  msg.sharedCodeSnippet!.filePath,
-                                  msg.sharedCodeSnippet!.highlightedLine
-                                )
-                              }
-                              className="text-blue-600 dark:text-blue-400 hover:underline shrink-0 cursor-pointer"
-                            >
-                              Inspect L{msg.sharedCodeSnippet.highlightedLine}
-                            </button>
-                          </div>
-                          <div className="p-2 overflow-x-auto font-mono text-[11px] leading-relaxed">
-                            {msg.sharedCodeSnippet.lines.map((snippetLine, sIdx) => {
-                              const lineNum = msg.sharedCodeSnippet!.startLine + sIdx;
-                              const isHighlighted =
-                                lineNum === msg.sharedCodeSnippet!.highlightedLine;
-                              const snippetLang = detectCodeLanguage(
-                                msg.sharedCodeSnippet!.filePath,
-                                msg.sharedCodeSnippet!.language
-                              );
-                              return (
-                                <div
-                                  key={lineNum}
-                                  className={`flex items-start gap-2.5 px-1.5 py-0.5 rounded ${
-                                    isHighlighted
-                                      ? 'bg-red-500/20 font-semibold'
-                                      : ''
-                                  }`}
+                        {msg.senderRole === 'copilot' &&
+                          msg.suggestedFollowUps &&
+                          msg.suggestedFollowUps.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                              {msg.suggestedFollowUps.map((followUp) => (
+                                <button
+                                  key={followUp}
+                                  type="button"
+                                  disabled={isSharkThinking}
+                                  onClick={() => void handleSendMessage(undefined, followUp)}
+                                  className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer disabled:opacity-50"
                                 >
-                                  <span className="w-6 text-right text-black/40 dark:text-white/40 select-none tabular-nums shrink-0">
-                                    {lineNum}
-                                  </span>
-                                  <span className="whitespace-pre">
-                                    {renderSyntaxHighlightedLine(snippetLine, snippetLang.id)}
-                                  </span>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-
-                      {msg.copilotPatch && (
-                        <div className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black p-2.5 space-y-2">
-                          <pre className="text-xs font-mono text-emerald-600 dark:text-emerald-400 overflow-x-auto leading-relaxed">
-                            {msg.copilotPatch.suggestedPatch}
-                          </pre>
-                          <button
-                            onClick={() => handleApplyPatchToCodespace(msg.id)}
-                            className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-lg cursor-pointer"
-                          >
-                            {msg.copilotPatch.applied || patchApplied
-                              ? 'Applied'
-                              : 'Apply Shark Fix'}
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                                  {followUp}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                      </div>
                     ))
+                  )}
+
+                  {isSharkThinking && (
+                    <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] p-3.5 max-w-md flex items-center justify-between gap-3 text-xs text-[#656d76] dark:text-[#8b949e]">
+                      <div className="flex items-center gap-2">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 dark:text-blue-400" />
+                        <span>Nerve Shark is thinking...</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCancelNerveShark}
+                        className="text-red-600 dark:text-red-400 hover:underline font-medium cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
             )}
 
-            {/* Contextual Quick-Reply Bar & Composer */}
-            <div className="p-3 border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black space-y-2">
+            {/* Composer */}
+            <div className="p-3.5 border-t border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2">
               {(canOpenP2PChannel || isSharkChannelActive) && (
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
                   {(() => {
@@ -5733,22 +5835,32 @@ export default function App() {
                     const hasPendingPatch =
                       Boolean(lastMsg?.copilotPatch && !lastMsg.copilotPatch.applied) &&
                       !patchApplied;
-                    const suggestions = [
-                      'Looking into it',
-                      'Tests passed',
-                      'Fix merged',
-                      ...(hasOpenIncident ? ['Checking stack trace'] : []),
-                      ...(hasPendingPatch ? ['Applying Shark patch'] : []),
-                      ...(activeRepo && activeFile
-                        ? [`${activeRepo.repo}#${activeRepo.branch}/${activeFile.path}:L${highlightedLine}`]
-                        : []),
-                    ];
+                    const suggestions = isSharkChannelActive
+                      ? [
+                          'How do I use Nerve?',
+                          'How do I connect API & SSH keys?',
+                          ...(activeRepo && activeFile
+                            ? [`Explain ${activeFile.path}`]
+                            : ['How do I track a repository?']),
+                        ]
+                      : [
+                          'Looking into it',
+                          'Tests passed',
+                          'Fix merged',
+                          ...(hasOpenIncident ? ['Checking stack trace'] : []),
+                          ...(hasPendingPatch ? ['Applying Shark patch'] : []),
+                          ...(activeRepo && activeFile
+                            ? [
+                                `${activeRepo.repo}#${activeRepo.branch}/${activeFile.path}:L${highlightedLine}`,
+                              ]
+                            : []),
+                        ];
                     return suggestions.map((replyText) => (
                       <button
                         key={replyText}
                         type="button"
                         onClick={() => handleSendMessage(undefined, replyText)}
-                        className="px-2.5 py-1 rounded-lg text-[11px] font-mono border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white hover:border-blue-500 dark:hover:border-blue-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                        className="px-2.5 py-1 rounded-md text-[11px] font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                       >
                         {replyText}
                       </button>
@@ -5766,48 +5878,59 @@ export default function App() {
                   onChange={(e) => setComposerText(e.target.value)}
                   placeholder={
                     isSharkChannelActive
-                      ? 'Ask Nerve Shark about this repo/file, /bug, or /exit to close...'
+                      ? 'Ask Nerve Shark how Nerve works, paste code, or type /exit to close...'
                       : canOpenP2PChannel
-                      ? 'Message, repo#branch/file:L42, @shark, /bug, or /exit... (Ctrl+Shift+C)'
-                      : 'Add/select a peer or click Nerve Shark to message'
+                      ? 'Write a message, repo#branch/file:L42, @shark, or /bug...'
+                      : 'Select Nerve Shark or a peer in the sidebar to start chatting'
                   }
-                  className="flex-1 px-3.5 py-2 text-xs rounded-xl border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="flex-1 px-3.5 py-2 text-xs sm:text-sm rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <button
-                  type="submit"
-                  disabled={(!canOpenP2PChannel && !isSharkChannelActive) || !composerText.trim()}
-                  className="px-3.5 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-xl flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>{isOffline ? 'Queue' : 'Send'}</span>
-                </button>
+                {isSharkThinking ? (
+                  <button
+                    type="button"
+                    onClick={handleCancelNerveShark}
+                    className="px-3.5 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Cancel</span>
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={(!canOpenP2PChannel && !isSharkChannelActive) || !composerText.trim()}
+                    className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>{isOffline ? 'Queue' : 'Send'}</span>
+                  </button>
+                )}
               </form>
             </div>
           </section>
 
           {/* =================================================================
-              RIGHT DRAWER: Code Viewer & Shared Codespace Terminal (Kept as liked)
+              RIGHT DRAWER: Code Viewer & Shared Codespace Terminal
           ================================================================= */}
           {isCodeDrawerOpen && (
-            <section className="w-full lg:w-[440px] bg-white dark:bg-black flex flex-col justify-between shrink-0">
+            <section className="w-full lg:w-[440px] bg-white dark:bg-[#0d1117] border-t lg:border-t-0 lg:border-l border-[#d0d7de] dark:border-[#30363d] flex flex-col justify-between shrink-0">
               {/* File Header & Repo/File Switcher */}
-              <div className="p-3.5 border-b border-neutral-200 dark:border-neutral-800 space-y-2">
+              <div className="p-3.5 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-bold text-black dark:text-white font-mono truncate">
+                      <span className="text-xs font-bold text-[#1f2328] dark:text-[#e6edf3] font-mono truncate">
                         {activeFile ? activeFile.path : 'No repository tracked'}
                       </span>
                       {activeFile && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono border border-neutral-200 dark:border-neutral-800 text-blue-600 dark:text-blue-400 shrink-0">
-                          {detectCodeLanguage(activeFile.path, activeFile.language).label}
+                        <span className="text-[11px] font-mono text-blue-600 dark:text-blue-400 shrink-0">
+                          · {detectCodeLanguage(activeFile.path, activeFile.language).label}
                         </span>
                       )}
                     </div>
-                    <div className="text-[11px] text-black/70 dark:text-white/70 font-mono truncate">
+                    <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] font-mono truncate">
                       {activeRepo
                         ? `${activeRepo.repo} · Line ${highlightedLine}`
-                        : 'Search any repository channel above to track a repo'}
+                        : 'Search any repository in the sidebar to inspect files'}
                     </div>
                   </div>
 
@@ -8200,14 +8323,16 @@ export default function App() {
       ===================================================================== */}
       {showBugModal && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-3">
-          <div className="w-full max-w-md rounded-xl border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white p-4 space-y-3 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800 pb-2">
-              <h3 className="text-sm font-bold text-black dark:text-white">
-                Report /bug
+          <div className="w-full max-w-md rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] p-4 space-y-3 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#d0d7de] dark:border-[#30363d] pb-2.5">
+              <h3 className="text-sm font-bold text-[#1f2328] dark:text-[#e6edf3]">
+                New Issue
               </h3>
               <button
+                type="button"
                 onClick={() => setShowBugModal(false)}
-                className="p-1 rounded-lg text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                aria-label="Close modal"
+                className="p-1 rounded-md text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -8216,7 +8341,7 @@ export default function App() {
             <form onSubmit={handleDispatchBugModal} className="space-y-2.5 text-xs">
               <div className="grid grid-cols-3 gap-2">
                 <div className="col-span-2 space-y-1">
-                  <label className="font-medium text-black dark:text-white">
+                  <label className="font-medium text-[#1f2328] dark:text-[#e6edf3]">
                     Repository
                   </label>
                   <input
@@ -8225,7 +8350,7 @@ export default function App() {
                     value={bugRepo}
                     onChange={(e) => setBugRepo(e.target.value)}
                     placeholder="owner/repo"
-                    className="w-full rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black px-2.5 py-1.5 text-black dark:text-white font-mono"
+                    className="w-full rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] px-2.5 py-1.5 text-[#1f2328] dark:text-[#e6edf3] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                   <datalist id="tracked-repos-list">
                     {Object.keys(repositories).map((r) => (
@@ -8235,20 +8360,20 @@ export default function App() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="font-medium text-black dark:text-white">
+                  <label className="font-medium text-[#1f2328] dark:text-[#e6edf3]">
                     Line
                   </label>
                   <input
                     type="number"
                     value={bugLine}
                     onChange={(e) => setBugLine(Number(e.target.value))}
-                    className="w-full rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black px-2.5 py-1.5 text-black dark:text-white font-mono"
+                    className="w-full rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] px-2.5 py-1.5 text-[#1f2328] dark:text-[#e6edf3] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
               <div className="space-y-1">
-                <label className="font-medium text-black dark:text-white">
+                <label className="font-medium text-[#1f2328] dark:text-[#e6edf3]">
                   File Path
                 </label>
                 <input
@@ -8256,12 +8381,12 @@ export default function App() {
                   value={bugFile}
                   onChange={(e) => setBugFile(e.target.value)}
                   placeholder="src/index.ts"
-                  className="w-full rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black px-2.5 py-1.5 text-black dark:text-white font-mono"
+                  className="w-full rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] px-2.5 py-1.5 text-[#1f2328] dark:text-[#e6edf3] font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="font-medium text-black dark:text-white">
+                <label className="font-medium text-[#1f2328] dark:text-[#e6edf3]">
                   Summary
                 </label>
                 <input
@@ -8269,12 +8394,12 @@ export default function App() {
                   value={bugSummary}
                   onChange={(e) => setBugSummary(e.target.value)}
                   placeholder="Describe the issue..."
-                  className="w-full rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black px-2.5 py-1.5 text-black dark:text-white"
+                  className="w-full rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] px-2.5 py-1.5 text-[#1f2328] dark:text-[#e6edf3] focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="font-medium text-black dark:text-white">
+                <label className="font-medium text-[#1f2328] dark:text-[#e6edf3]">
                   Stack Trace
                 </label>
                 <textarea
@@ -8282,23 +8407,23 @@ export default function App() {
                   value={bugStackTrace}
                   onChange={(e) => setBugStackTrace(e.target.value)}
                   placeholder="Optional stack trace..."
-                  className="w-full rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black p-2 text-black dark:text-white font-mono text-xs"
+                  className="w-full rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] p-2 text-[#1f2328] dark:text-[#e6edf3] font-mono text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#d0d7de] dark:border-[#30363d]">
                 <button
                   type="button"
                   onClick={() => setShowBugModal(false)}
-                  className="px-3 py-1.5 rounded-lg text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer"
+                  className="px-3 py-1.5 rounded-md text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer"
                 >
-                  {isOffline ? 'Queue /bug' : 'Dispatch /bug'}
+                  {isOffline ? 'Queue Issue' : 'Create Issue'}
                 </button>
               </div>
             </form>
@@ -8383,13 +8508,13 @@ export default function App() {
       />
 
       {/* Quiet Legal Site Footer */}
-      <footer className="border-t border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black px-4 sm:px-6 py-3 text-xs text-neutral-500 dark:text-neutral-400 flex flex-wrap items-center justify-between gap-3">
+      <footer className="mt-auto border-t border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] px-4 sm:px-6 py-3.5 text-xs text-[#656d76] dark:text-[#8b949e] flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span>© {new Date().getFullYear()} Nerve</span>
           <span aria-hidden="true">·</span>
           <a
             href="mailto:nervep2p@gmail.com"
-            className="hover:text-black dark:hover:text-white transition-colors"
+            className="hover:text-[#1f2328] dark:hover:text-[#e6edf3] transition-colors"
           >
             nervep2p@gmail.com
           </a>
@@ -8401,7 +8526,7 @@ export default function App() {
               e.preventDefault();
               setActiveTab('privacy');
             }}
-            className="hover:text-black dark:hover:text-white underline-offset-4 hover:underline transition-colors whitespace-nowrap shrink-0"
+            className="hover:text-[#1f2328] dark:hover:text-[#e6edf3] underline-offset-4 hover:underline transition-colors whitespace-nowrap shrink-0"
           >
             Privacy Policy
           </a>
@@ -8411,7 +8536,7 @@ export default function App() {
               e.preventDefault();
               setActiveTab('terms');
             }}
-            className="hover:text-black dark:hover:text-white underline-offset-4 hover:underline transition-colors whitespace-nowrap shrink-0"
+            className="hover:text-[#1f2328] dark:hover:text-[#e6edf3] underline-offset-4 hover:underline transition-colors whitespace-nowrap shrink-0"
           >
             Terms &amp; Conditions
           </a>

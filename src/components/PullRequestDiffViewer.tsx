@@ -257,60 +257,60 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* =====================================================================
-          1. PULL REQUEST HEADER & METADATA BAR
-      ====================================================================== */}
-      <div className="rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black p-4 sm:p-5 shadow-sm space-y-4">
+      {/* 1. Pull Request Header & Controls */}
+      <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] p-4 sm:p-5 space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="space-y-1.5 min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-50 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="inline-flex items-center gap-1 font-mono font-semibold text-purple-700 dark:text-purple-400">
                 <GitPullRequest className="w-3.5 h-3.5" />
                 <span>PR #{prNumber}</span>
               </span>
-
+              <span className="text-[#656d76] dark:text-[#8b949e]" aria-hidden="true">·</span>
               <span
-                className={`px-2.5 py-0.5 rounded-full text-xs font-semibold flex items-center gap-1 ${
+                className={`font-semibold inline-flex items-center gap-1 ${
                   isMerged
-                    ? 'bg-purple-100 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-700'
+                    ? 'text-purple-700 dark:text-purple-400'
                     : isTestingFix
-                    ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
-                    : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800'
+                    ? 'text-amber-700 dark:text-amber-400'
+                    : 'text-emerald-700 dark:text-emerald-400'
                 }`}
               >
                 {isMerged ? (
                   <>
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Merged & Deployed</span>
+                    <span>Merged</span>
                   </>
                 ) : (
                   <>
                     <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>Ready for Review</span>
+                    <span>Ready for review</span>
                   </>
                 )}
               </span>
-
-              <span className="text-xs font-mono text-neutral-500">
-                Ticket: <strong className="text-black dark:text-white">{report.ticketId}</strong>
+              <span className="text-[#656d76] dark:text-[#8b949e]" aria-hidden="true">·</span>
+              <span className="font-mono text-[#656d76] dark:text-[#8b949e]">
+                {report.ticketId}
               </span>
             </div>
 
-            <h1 className="text-base sm:text-lg font-bold text-black dark:text-white truncate">
+            <h1 className="text-base sm:text-lg font-bold text-[#1f2328] dark:text-[#e6edf3] truncate">
               {report.summary}
             </h1>
 
-            {/* Branch info & Commits */}
-            <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-neutral-600 dark:text-neutral-400">
-              <span className="px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 border border-neutral-300 dark:border-neutral-800">
+            {/* Branch info & Author */}
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-mono text-[#656d76] dark:text-[#8b949e]">
+              <span className="px-1.5 py-0.5 rounded bg-[#f6f8fa] dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d]">
                 {prBranch}
               </span>
               <span>into</span>
-              <span className="px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 border border-neutral-300 dark:border-neutral-800 font-semibold">
+              <span className="px-1.5 py-0.5 rounded bg-[#f6f8fa] dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] font-semibold">
                 {report.branch || 'main'}
               </span>
-              <span>·</span>
-              <span>Author: <strong className="text-black dark:text-white">{report.implementedFix?.author || 'Shark Bot'}</strong></span>
+              <span aria-hidden="true">·</span>
+              <span>
+                by <strong className="text-[#1f2328] dark:text-[#e6edf3]">{report.implementedFix?.author || 'Nerve Shark'}</strong>
+              </span>
             </div>
           </div>
 
@@ -321,10 +321,10 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                 type="button"
                 onClick={handleRunTests}
                 disabled={isTesting}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-black hover:bg-neutral-100 dark:hover:bg-neutral-900 text-black dark:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+                className="px-3 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
-                <Play className="w-3.5 h-3.5 text-blue-500" />
-                <span>{isTesting ? 'Running CI...' : 'Run CI Tests'}</span>
+                <Play className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <span>{isTesting ? 'Running Tests...' : 'Run Tests'}</span>
               </button>
             )}
 
@@ -333,14 +333,14 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                 type="button"
                 onClick={handleDeploy}
                 disabled={isMerging || isMerged}
-                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5 transition-all cursor-pointer ${
+                className={`px-3.5 py-1.5 rounded-md text-xs font-semibold text-white flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
                   isMerged
                     ? 'bg-purple-600 opacity-90 cursor-default'
-                    : 'bg-emerald-600 hover:bg-emerald-500 shadow-sm'
+                    : 'bg-emerald-600 hover:bg-emerald-500'
                 }`}
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>{isMerged ? 'PR Merged ✓' : isMerging ? 'Merging...' : 'Approve & Merge PR'}</span>
+                <span>{isMerged ? 'Merged' : isMerging ? 'Merging...' : 'Approve & Merge'}</span>
               </button>
             )}
 
@@ -348,7 +348,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
               <button
                 type="button"
                 onClick={onBackToOverview}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-neutral-300 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer"
+                className="px-3 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] cursor-pointer whitespace-nowrap"
               >
                 Overview
               </button>
@@ -357,34 +357,30 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
         </div>
 
         {/* Diff Statistics & Controls Bar */}
-        <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-          {/* Additions & Deletions Counter */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1 font-mono font-bold">
-              <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
-                +{totalAdditions} additions
-              </span>
-              <span className="px-2 py-0.5 rounded bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800">
-                -{totalDeletions} deletions
-              </span>
-            </div>
-
-            <span className="text-neutral-400 font-mono">
+        <div className="pt-3 border-t border-[#d0d7de] dark:border-[#30363d] flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-3 font-mono tabular-nums">
+            <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
+              +{totalAdditions}
+            </span>
+            <span className="text-rose-700 dark:text-rose-400 font-semibold">
+              -{totalDeletions}
+            </span>
+            <span className="text-[#656d76] dark:text-[#8b949e]" aria-hidden="true">·</span>
+            <span className="text-[#656d76] dark:text-[#8b949e]">
               {parsedFiles.length} file{parsedFiles.length !== 1 ? 's' : ''} changed
             </span>
           </div>
 
-          {/* View Toggles & Export buttons */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             {/* View Mode: Unified vs Split */}
-            <div className="inline-flex rounded-lg p-0.5 bg-neutral-100 dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800">
+            <div className="inline-flex rounded-md p-0.5 bg-[#f6f8fa] dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d]">
               <button
                 type="button"
                 onClick={() => setViewMode('unified')}
-                className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
                   viewMode === 'unified'
-                    ? 'bg-blue-600 text-white'
-                    : 'text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white'
+                    ? 'bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] shadow-xs'
+                    : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
                 }`}
                 title="Unified inline diff view"
               >
@@ -394,10 +390,10 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
               <button
                 type="button"
                 onClick={() => setViewMode('split')}
-                className={`px-2 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
                   viewMode === 'split'
-                    ? 'bg-blue-600 text-white'
-                    : 'text-neutral-600 dark:text-neutral-400 hover:text-black dark:hover:text-white'
+                    ? 'bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] shadow-xs'
+                    : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
                 }`}
                 title="Side-by-side split diff view"
               >
@@ -406,12 +402,11 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
               </button>
             </div>
 
-            {/* Copy & Download patch */}
             <button
               type="button"
               onClick={handleCopyDiff}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium border border-neutral-300 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300 flex items-center gap-1 cursor-pointer"
-              title="Copy raw unified diff to clipboard"
+              className="px-2.5 py-1 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              title="Copy unified diff"
             >
               {copiedPatch ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
               <span>{copiedPatch ? 'Copied' : 'Copy Diff'}</span>
@@ -420,19 +415,17 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
             <button
               type="button"
               onClick={handleDownloadPatch}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium border border-neutral-300 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300 flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1 cursor-pointer whitespace-nowrap"
               title="Download .patch file"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>.patch</span>
+              <span>Download .patch</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* =====================================================================
-          2. FILE TREE / TABS (IF MULTIPLE FILES)
-      ====================================================================== */}
+      {/* 2. File Tabs (if multiple files) */}
       {parsedFiles.length > 1 && (
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
           {parsedFiles.map((file, idx) => (
@@ -440,18 +433,18 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
               key={file.filename}
               type="button"
               onClick={() => setSelectedFileIdx(idx)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-2 border transition-all cursor-pointer whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-md text-xs font-mono flex items-center gap-2 border transition-colors cursor-pointer whitespace-nowrap ${
                 selectedFileIdx === idx
-                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 font-bold'
-                  : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-900'
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-semibold'
+                  : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] text-[#656d76] dark:text-[#8b949e] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d]'
               }`}
             >
               <FileCode className="w-3.5 h-3.5" />
               <span>{file.filename}</span>
-              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
+              <span className="text-[10px] text-emerald-700 dark:text-emerald-400 font-semibold">
                 +{file.additions}
               </span>
-              <span className="text-[10px] text-rose-600 dark:text-rose-400 font-semibold">
+              <span className="text-[10px] text-rose-700 dark:text-rose-400 font-semibold">
                 -{file.deletions}
               </span>
             </button>
@@ -459,12 +452,9 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
         </div>
       )}
 
-      {/* =====================================================================
-          3. LINE-BY-LINE DIFF CODE VIEWER
-      ====================================================================== */}
-      <div className="rounded-2xl border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black overflow-hidden shadow-sm">
-        {/* File Header Banner */}
-        <div className="px-4 py-2.5 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 flex flex-wrap items-center justify-between gap-2">
+      {/* 3. Line-by-Line Diff Viewer */}
+      <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -474,7 +464,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                   [selectedFileIdx]: !prev[selectedFileIdx],
                 }))
               }
-              className="text-neutral-400 hover:text-black dark:hover:text-white cursor-pointer"
+              className="text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
             >
               {expandedFiles[selectedFileIdx] !== false ? (
                 <ChevronDown className="w-4 h-4" />
@@ -482,33 +472,29 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                 <ChevronRight className="w-4 h-4" />
               )}
             </button>
-            <FileCode className="w-4 h-4 text-blue-500" />
-            <span className="font-mono text-xs font-bold text-black dark:text-white">
+            <FileCode className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            <span className="font-mono text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3]">
               {activeFile.filename}
             </span>
-            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase tracking-wider bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300">
-              {activeFile.status}
+            <span className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
+              · {activeFile.status}
             </span>
           </div>
 
-          <div className="flex items-center gap-3 text-xs font-mono">
-            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-              +{activeFile.additions} lines
+          <div className="flex items-center gap-3 text-xs font-mono tabular-nums">
+            <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
+              +{activeFile.additions}
             </span>
-            <span className="text-rose-600 dark:text-rose-400 font-semibold">
-              -{activeFile.deletions} lines
+            <span className="text-rose-700 dark:text-rose-400 font-semibold">
+              -{activeFile.deletions}
             </span>
           </div>
         </div>
 
-        {/* File Diff Content */}
         {expandedFiles[selectedFileIdx] !== false && (
           <div className="overflow-x-auto text-xs font-mono leading-relaxed select-text">
             {viewMode === 'unified' ? (
-              /* -------------------------------------------------------------
-                 UNIFIED (INLINE) VIEW
-              ------------------------------------------------------------- */
-              <div className="min-w-[640px] divide-y divide-neutral-100 dark:divide-neutral-900">
+              <div className="min-w-[640px] divide-y divide-[#d0d7de]/50 dark:divide-[#21262d]">
                 {activeFile.lines.map((line, lineIndex) => {
                   const lineKey = `${activeFile.filename}:${lineIndex}`;
                   const isAdd = line.type === 'add';
@@ -522,35 +508,30 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                       <div
                         className={`flex items-stretch transition-colors ${
                           isAdd
-                            ? 'bg-emerald-500/10 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200 border-l-4 border-emerald-500'
+                            ? 'bg-emerald-500/10 dark:bg-emerald-950/35 text-emerald-900 dark:text-emerald-200'
                             : isDel
-                            ? 'bg-rose-500/10 dark:bg-rose-950/30 text-rose-900 dark:text-rose-200 border-l-4 border-rose-500'
+                            ? 'bg-rose-500/10 dark:bg-rose-950/35 text-rose-900 dark:text-rose-200'
                             : isHunk
-                            ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-bold border-l-4 border-blue-400'
-                            : 'hover:bg-neutral-50 dark:hover:bg-neutral-950 text-neutral-800 dark:text-neutral-200 border-l-4 border-transparent'
+                            ? 'bg-blue-50/80 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-semibold'
+                            : 'hover:bg-[#f6f8fa] dark:hover:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3]'
                         }`}
                       >
-                        {/* Old Line Number */}
-                        <div className="w-12 py-1 px-1.5 text-right text-[11px] font-mono text-neutral-400 dark:text-neutral-600 select-none border-r border-neutral-200 dark:border-neutral-800 shrink-0">
+                        <div className="w-12 py-1 px-1.5 text-right text-[11px] font-mono tabular-nums text-[#656d76] dark:text-[#8b949e] select-none border-r border-[#d0d7de] dark:border-[#30363d] shrink-0">
                           {line.oldLineNumber || ''}
                         </div>
 
-                        {/* New Line Number */}
-                        <div className="w-12 py-1 px-1.5 text-right text-[11px] font-mono text-neutral-400 dark:text-neutral-600 select-none border-r border-neutral-200 dark:border-neutral-800 shrink-0">
+                        <div className="w-12 py-1 px-1.5 text-right text-[11px] font-mono tabular-nums text-[#656d76] dark:text-[#8b949e] select-none border-r border-[#d0d7de] dark:border-[#30363d] shrink-0">
                           {line.newLineNumber || ''}
                         </div>
 
-                        {/* Symbol marker (+ / - / ' ') */}
                         <div className="w-6 py-1 text-center font-mono font-bold select-none shrink-0">
                           {isAdd ? '+' : isDel ? '-' : isHunk ? '@@' : ' '}
                         </div>
 
-                        {/* Code Text */}
                         <div className="flex-1 py-1 px-2 whitespace-pre overflow-x-auto min-w-0">
                           {line.text}
                         </div>
 
-                        {/* Add Inline Review Comment Button on Hover */}
                         {!isHunk && (
                           <div className="w-8 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                             <button
@@ -558,7 +539,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                               onClick={() =>
                                 setActiveCommentLineKey(isCommenting ? null : lineKey)
                               }
-                              className="p-1 rounded bg-blue-600 hover:bg-blue-500 text-white cursor-pointer shadow-sm text-[10px]"
+                              className="p-1 rounded bg-blue-600 hover:bg-blue-500 text-white cursor-pointer"
                               title="Add review comment to this line"
                             >
                               <MessageSquare className="w-3 h-3" />
@@ -567,30 +548,29 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                         )}
                       </div>
 
-                      {/* Line Comments Box */}
                       {(comments.length > 0 || isCommenting) && (
-                        <div className="bg-neutral-50 dark:bg-neutral-950 border-t border-b border-neutral-200 dark:border-neutral-800 p-3 ml-24 space-y-2">
+                        <div className="bg-[#f6f8fa] dark:bg-[#161b22] border-t border-b border-[#d0d7de] dark:border-[#30363d] p-3 ml-24 space-y-2">
                           {comments.map((comment) => (
                             <div
                               key={comment.id}
-                              className="p-2.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-xs space-y-1"
+                              className="p-2.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-xs space-y-1"
                             >
                               <div className="flex items-center justify-between">
                                 <span className="font-semibold text-blue-600 dark:text-blue-400">
                                   {comment.author}
                                 </span>
                                 <div className="flex items-center gap-2">
-                                  <span className="text-[10px] text-neutral-400">{comment.time}</span>
+                                  <span className="text-[10px] text-[#656d76] dark:text-[#8b949e] tabular-nums">{comment.time}</span>
                                   <button
                                     type="button"
                                     onClick={() => handleDeleteComment(lineKey, comment.id)}
-                                    className="text-neutral-400 hover:text-rose-500 cursor-pointer"
+                                    className="text-[#656d76] hover:text-rose-500 cursor-pointer"
                                   >
                                     <Trash2 className="w-3 h-3" />
                                   </button>
                                 </div>
                               </div>
-                              <p className="text-black dark:text-white leading-relaxed">
+                              <p className="text-[#1f2328] dark:text-[#e6edf3] leading-relaxed">
                                 {comment.text}
                               </p>
                             </div>
@@ -606,14 +586,14 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                                   if (e.key === 'Enter') handleAddComment(lineKey);
                                   if (e.key === 'Escape') setActiveCommentLineKey(null);
                                 }}
-                                placeholder="Write inline code review comment... (Press Enter to post)"
-                                className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-black text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                placeholder="Write a review comment... (Press Enter to post)"
+                                className="flex-1 px-3 py-1.5 text-xs rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none focus:ring-1 focus:ring-blue-500"
                                 autoFocus
                               />
                               <button
                                 type="button"
                                 onClick={() => handleAddComment(lineKey)}
-                                className="px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-lg flex items-center gap-1 cursor-pointer"
+                                className="px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white rounded-md flex items-center gap-1 cursor-pointer"
                               >
                                 <Send className="w-3 h-3" />
                                 <span>Post</span>
@@ -621,7 +601,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                               <button
                                 type="button"
                                 onClick={() => setActiveCommentLineKey(null)}
-                                className="px-2.5 py-1.5 text-xs text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                                className="px-2.5 py-1.5 text-xs text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
                               >
                                 Cancel
                               </button>
@@ -634,10 +614,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                 })}
               </div>
             ) : (
-              /* -------------------------------------------------------------
-                 SPLIT (SIDE-BY-SIDE) VIEW
-              ------------------------------------------------------------- */
-              <div className="min-w-[760px] divide-y divide-neutral-100 dark:divide-neutral-900">
+              <div className="min-w-[760px] divide-y divide-[#d0d7de]/50 dark:divide-[#21262d]">
                 {activeFile.lines.map((line, lineIndex) => {
                   const isAdd = line.type === 'add';
                   const isDel = line.type === 'delete';
@@ -647,7 +624,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                     return (
                       <div
                         key={lineIndex}
-                        className="py-1 px-3 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-bold border-l-4 border-blue-400"
+                        className="py-1 px-3 bg-blue-50/80 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 font-semibold"
                       >
                         {line.text}
                       </div>
@@ -655,18 +632,17 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                   }
 
                   return (
-                    <div key={lineIndex} className="grid grid-cols-2 divide-x divide-neutral-200 dark:divide-neutral-800">
-                      {/* Left: Base / Original line */}
+                    <div key={lineIndex} className="grid grid-cols-2 divide-x divide-[#d0d7de] dark:divide-[#30363d]">
                       <div
                         className={`flex items-stretch min-w-0 ${
                           isDel
-                            ? 'bg-rose-500/10 dark:bg-rose-950/30 text-rose-900 dark:text-rose-200'
+                            ? 'bg-rose-500/10 dark:bg-rose-950/35 text-rose-900 dark:text-rose-200'
                             : isAdd
-                            ? 'bg-neutral-50/50 dark:bg-neutral-950/40 text-transparent select-none'
-                            : 'hover:bg-neutral-50 dark:hover:bg-neutral-950 text-neutral-800 dark:text-neutral-200'
+                            ? 'bg-[#f6f8fa]/60 dark:bg-[#161b22]/50 text-transparent select-none'
+                            : 'hover:bg-[#f6f8fa] dark:hover:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3]'
                         }`}
                       >
-                        <div className="w-10 py-1 px-1.5 text-right text-[11px] font-mono text-neutral-400 select-none border-r border-neutral-200 dark:border-neutral-800 shrink-0">
+                        <div className="w-10 py-1 px-1.5 text-right text-[11px] font-mono tabular-nums text-[#656d76] dark:text-[#8b949e] select-none border-r border-[#d0d7de] dark:border-[#30363d] shrink-0">
                           {isDel || (!isAdd && !isDel) ? line.oldLineNumber || '' : ''}
                         </div>
                         <div className="w-5 py-1 text-center font-mono font-bold select-none shrink-0">
@@ -677,17 +653,16 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                         </div>
                       </div>
 
-                      {/* Right: Head / Modified line */}
                       <div
                         className={`flex items-stretch min-w-0 ${
                           isAdd
-                            ? 'bg-emerald-500/10 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200'
+                            ? 'bg-emerald-500/10 dark:bg-emerald-950/35 text-emerald-900 dark:text-emerald-200'
                             : isDel
-                            ? 'bg-neutral-50/50 dark:bg-neutral-950/40 text-transparent select-none'
-                            : 'hover:bg-neutral-50 dark:hover:bg-neutral-950 text-neutral-800 dark:text-neutral-200'
+                            ? 'bg-[#f6f8fa]/60 dark:bg-[#161b22]/50 text-transparent select-none'
+                            : 'hover:bg-[#f6f8fa] dark:hover:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3]'
                         }`}
                       >
-                        <div className="w-10 py-1 px-1.5 text-right text-[11px] font-mono text-neutral-400 select-none border-r border-neutral-200 dark:border-neutral-800 shrink-0">
+                        <div className="w-10 py-1 px-1.5 text-right text-[11px] font-mono tabular-nums text-[#656d76] dark:text-[#8b949e] select-none border-r border-[#d0d7de] dark:border-[#30363d] shrink-0">
                           {isAdd || (!isAdd && !isDel) ? line.newLineNumber || '' : ''}
                         </div>
                         <div className="w-5 py-1 text-center font-mono font-bold select-none shrink-0">
@@ -706,17 +681,15 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
         )}
       </div>
 
-      {/* =====================================================================
-          4. REVIEW SUBMISSION FOOTER
-      ====================================================================== */}
-      <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      {/* 4. Review Action Bar */}
+      <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-xs">
-          <ShieldCheck className="w-4 h-4 text-emerald-500" />
-          <span className="font-semibold text-black dark:text-white">
-            Code Review Protocol
+          <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+            Syntax Check Passed
           </span>
-          <span className="text-neutral-500">
-            · All additions and deletions validated by automated AST syntax parser
+          <span className="text-[#656d76] dark:text-[#8b949e]">
+            · Patch additions and deletions verified before merge
           </span>
         </div>
 
@@ -726,14 +699,14 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
               type="button"
               onClick={handleDeploy}
               disabled={isMerging || isMerged}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold text-white flex items-center gap-1.5 transition-all cursor-pointer ${
+              className={`px-4 py-1.5 rounded-md text-xs font-semibold text-white flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
                 isMerged
                   ? 'bg-purple-600 opacity-90 cursor-default'
-                  : 'bg-emerald-600 hover:bg-emerald-500 shadow-sm'
+                  : 'bg-emerald-600 hover:bg-emerald-500'
               }`}
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>{isMerged ? 'Pull Request Merged' : isMerging ? 'Deploying Fix...' : 'Approve & Merge'}</span>
+              <span>{isMerged ? 'Merged' : isMerging ? 'Merging...' : 'Approve & Merge'}</span>
             </button>
           )}
         </div>

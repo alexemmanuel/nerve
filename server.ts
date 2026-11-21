@@ -176,6 +176,8 @@ const ALL_NERVE_ECOSYSTEM_SCOPES: string[] = [
   'copilot.collaborate',
   'shark.collaborate',
   'shark.cancel',
+  'shark.chatbox_guide',
+  'shark.multi_turn',
   'incidents.dispatch',
   'incidents.ai_log_triage',
   'incidents.line_numbered_log_triage',
@@ -357,7 +359,7 @@ app.get('/api/v1/health', async (req, res) => {
   res.json({
     ok: true,
     protocol: 'nerve.health.v1',
-    engineVersion: '1.6.3',
+    engineVersion: '1.7.0',
     contactEmail: NERVE_CONTACT_EMAIL,
     runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
     geminiModel: 'gemini-4-hydrogen',
@@ -702,7 +704,7 @@ app.post('/api/v1/integration/verify-access', (req, res) => {
 app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
   res.json({
     protocol: 'nerve.engine.gateway.v1',
-    engineVersion: '1.6.3',
+    engineVersion: '1.7.0',
     contactEmail: NERVE_CONTACT_EMAIL,
     runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
     geminiModel: 'gemini-4-hydrogen',
@@ -735,7 +737,7 @@ app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
       {
         engine: 'nerve_shark',
         endpoint: '/api/v1/copilot/collaborate',
-        description: 'Invoke Nerve Shark AI (gemini-4-hydrogen) in standalone or multi-developer peer channels',
+        description: 'Dual-mode Nerve Shark AI chatbox & coding copilot (gemini-4-hydrogen) with multi-turn memory, Nerve onboarding guide, and Integration help',
       },
       {
         engine: 'incidents',
@@ -1393,18 +1395,21 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
       const geminiConfigured = Boolean(rawGeminiKey && rawGeminiKey !== 'MY_GEMINI_API_KEY');
       result = {
         protocol: 'nerve.shark.v1',
+        engineVersion: '1.7.0',
         model: 'gemini-4-hydrogen',
-        agent: 'Nerve Shark Shared Multi-Developer AI Agent',
+        agent: 'Nerve Shark Dual-Mode Chatbox & Coding Assistant',
+        modes: ['chat', 'code'],
+        multiTurnHistorySupported: true,
         standaloneChannelSupported: true,
+        integrationAssistantEnabled: true,
         openMode: 'on-demand-prompt',
         abortControllerSupported: true,
         geminiKeyConfigured: geminiConfigured,
         supportedGeminiKeyPrefixes: ['AQ.', 'AIza'],
         repo: payload.repo || 'owner/repository',
-        rootCause: 'Unchecked writable stream state prior to chunk flush',
-        suggestion:
+        summary:
           payload.prompt ||
-          'Guard stream write with socket.writable && !stream.destroyed check before flushing chunk.',
+          'Nerve Shark is ready in dual-mode: ask how to use Nerve, set up Integration keys/SSH, or request a code review and patch.',
         confidence: 0.98,
       };
       break;
@@ -1573,7 +1578,7 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
       const geminiConfigured = Boolean(rawGeminiKey && rawGeminiKey !== 'MY_GEMINI_API_KEY');
       result = {
         protocol: 'nerve.health.v1',
-        engineVersion: '1.6.3',
+        engineVersion: '1.7.0',
         contactEmail: NERVE_CONTACT_EMAIL,
         runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
         geminiModel: 'gemini-4-hydrogen',
@@ -3408,35 +3413,99 @@ const handleCodespaceTelemetry = (req: Request, res: Response) => {
 app.get('/api/v1/codespaces/telemetry', authenticateApiKey, handleCodespaceTelemetry);
 app.post('/api/v1/codespaces/telemetry', authenticateApiKey, handleCodespaceTelemetry);
 
-// 6. Feature 5: Multi-Developer & Nerve Shark Shared Work Surface (Powered by Gemini 4 Hydrogen)
+// 6. Feature 5: Dual-Mode Nerve Shark Chatbox & Multi-Developer AI Agent (Powered by Gemini 4 Hydrogen)
 app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => {
   const {
-    prompt = 'Analyze the code and propose a clean, non-blocking patch.',
-    repo = 'owner/repository',
+    prompt = '',
+    repo = '',
     branch = 'main',
-    filePath = 'src/index.ts',
+    filePath = '',
     codeSnippet = '',
-    participants = ['developer-1', 'developer-2'],
+    participants = ['developer-1', 'nerve-shark'],
     incidentTicket = null,
+    mode = 'auto',
+    surface = 'workspace',
+    history = [],
   } = req.body || {};
+
+  const cleanPrompt = String(prompt || '').trim() || 'How does Nerve work?';
+  const normalizedHistory = Array.isArray(history)
+    ? history
+        .slice(-10)
+        .filter((item: any) => item && typeof item.text === 'string' && item.text.trim())
+        .map((item: any) => ({
+          role: item.role === 'assistant' ? 'Nerve Shark' : 'User',
+          text: String(item.text).trim().slice(0, 800),
+        }))
+    : [];
+
+  const looksLikeCodeRequest =
+    mode === 'code' ||
+    Boolean(incidentTicket) ||
+    (mode !== 'chat' &&
+      /\b(fix|patch|bug|error|exception|stack\s*trace|refactor|optimize|function|typescript|javascript|python|code|line\s*\d+|diff|pr|pull\s*request|review\s+(this|the)\s+(file|code)|debug)\b/i.test(
+        cleanPrompt
+      ) &&
+      Boolean(filePath || codeSnippet));
 
   const snippetLines = String(codeSnippet || '')
     .split('\n')
     .filter((l) => l.trim().length > 0);
   const previewLine = snippetLines.slice(0, 6).join('\n');
-  const buildFallbackPayload = (reasonNote?: string) => ({
-    protocol: 'nerve.shark.v1',
-    model: 'gemini-4-hydrogen (nerve-shark-fallback)',
-    participants,
-    summary: `Nerve Shark analyzed ${repo}#${branch}/${filePath} (${prompt}):${
-      reasonNote ? ` ${reasonNote}` : ''
-    } Added defensive guardrails and clean error handling around the highlighted execution path.`,
-    suggestedPatch: previewLine
-      ? `// Guarded update for ${filePath}\n${previewLine}\n// Ensure null-safety & explicit error propagation`
-      : `// Defensive guard for ${filePath}\nif (!context) {\n  throw new Error('Missing execution context in ${filePath}');\n}`,
-    recommendedTerminalCommand: 'npm test',
-    prTitle: `fix(${filePath.split('/').pop() || 'core'}): add defensive guard and stabilize ${filePath}`,
-  });
+
+  const buildFallbackPayload = (reasonNote?: string) => {
+    if (!looksLikeCodeRequest) {
+      const lower = cleanPrompt.toLowerCase();
+      let guideReply =
+        'Welcome to Nerve! Use the left sidebar to track a GitHub/GitLab repository, add @peer teammates for end-to-end encrypted chat, or open Incidents to triage /bug tickets. You can ask me anytime how to use any screen, configure API/SSH keys in Integration, or review code in your open file.';
+      if (lower.includes('integrat') || lower.includes('api key') || lower.includes('ssh') || lower.includes('webhook')) {
+        guideReply =
+          'Open the Integration tab to manage Live (nrve_live_) and Test (nrve_test_) API keys, add Workspace or GitHub SSH keys, test endpoints in the Endpoint Runner, or click Verify Live Gemini to confirm your server connection. Platform support email: nervep2p@gmail.com.';
+      } else if (lower.includes('bug') || lower.includes('incident')) {
+        guideReply =
+          'Click New Issue in the top bar (or type /bug in any chat) to log an incident linked to an exact repo file and line. Then open the Incidents tab to inspect logs, run tests, and push a fix PR.';
+      } else if (lower.includes('exit') || lower.includes('close') || lower.includes('cancel')) {
+        guideReply =
+          'Click Close in the chat header or type /exit, exit, :q, or /close in the message box to leave any chat or Nerve Shark channel. While Nerve Shark is thinking, click Cancel or type /cancel shark to stop the request.';
+      }
+      return {
+        protocol: 'nerve.shark.v1',
+        model: 'gemini-4-hydrogen (nerve-shark-fallback)',
+        mode: 'chat',
+        participants,
+        summary: reasonNote ? `${guideReply} (${reasonNote})` : guideReply,
+        suggestedPatch: '',
+        recommendedTerminalCommand: '',
+        prTitle: '',
+        suggestedFollowUps: [
+          'How do I connect a repository and run tests?',
+          'How do API keys and SSH keys work in Integration?',
+          'How do I start an encrypted chat with a peer?',
+        ],
+      };
+    }
+
+    const safeRepo = repo || 'owner/repository';
+    const safeFile = filePath || 'src/index.ts';
+    return {
+      protocol: 'nerve.shark.v1',
+      model: 'gemini-4-hydrogen (nerve-shark-fallback)',
+      mode: 'code',
+      participants,
+      summary: `Nerve Shark analyzed ${safeRepo}#${branch}/${safeFile} (${cleanPrompt}):${
+        reasonNote ? ` ${reasonNote}` : ''
+      } Added defensive guardrails and clean error handling around the highlighted execution path.`,
+      suggestedPatch: previewLine
+        ? `// Guarded update for ${safeFile}\n${previewLine}\n// Ensure null-safety & explicit error propagation`
+        : `// Defensive guard for ${safeFile}\nif (!context) {\n  throw new Error('Missing execution context in ${safeFile}');\n}`,
+      recommendedTerminalCommand: 'npm test',
+      prTitle: `fix(${safeFile.split('/').pop() || 'core'}): add defensive guard and stabilize ${safeFile}`,
+      suggestedFollowUps: [
+        'Explain why this fix prevents crashes',
+        'Write a unit test for this edge case',
+      ],
+    };
+  };
 
   const ai = getGenAIClient();
 
@@ -3446,20 +3515,30 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
 
   try {
     const systemInstruction = [
-      `You are the Nerve Shark Shared Multi-Developer AI Agent.`,
-      `Multiple developers (${participants.join(' and ')}) are collaborating in real time on repository ${repo} (${filePath}).`,
-      `Provide a concise technical analysis/answer (2-3 sentences max), an exact code patch or snippet if applicable, the shell command to verify, and a conventional commit PR title.`,
+      `You are Nerve Shark, the friendly, clear, dual-mode AI assistant built into Nerve (a GitHub-native, end-to-end encrypted developer workspace).`,
+      `You serve two roles seamlessly:`,
+      `1. App Guide & Chatbox (mode="chat"): Help users easily understand and use Nerve in plain, approachable language—without unnecessary jargon. Know Nerve's exact UI and features: Top tabs (Workspace, Incidents, Integration); Workspace left sidebar (Search repos/peers, Nerve Shark chatbox, Direct Messages with E2EE AES-GCM-256, Tracked Repositories, Focus Mode toggle, Code & Terminal panel); Right panel (Code Viewer with deep links like owner/repo#main/file.ts:L42 and built-in Codespace Terminal); Incidents tab (New Issue / /bug dispatch, log triage, PR diffs); Integration tab (Overview & Live Gemini health probe, API Keys nrve_live_/nrve_test_, Workspace & GitHub SSH Keys, API & SDKs, Embedded Ask Nerve Shark assistant); Commands (/bug to report an issue, @shark to call you in a peer chat, /exit or :q or Close to leave a chat, /cancel shark to abort); Contact email: nervep2p@gmail.com.`,
+      `2. Coding & Debugging Copilot (mode="code"): When the user asks to review, debug, fix, refactor, or write code (or references a bug/file/snippet), provide a clear explanation plus a concrete suggestedPatch, recommendedTerminalCommand, and conventional commit prTitle.`,
+      `CRITICAL: If the user is asking a general question, greeting you, or asking how to use Nerve or Integration (NOT requesting a code patch), you MUST set mode="chat" and leave suggestedPatch, recommendedTerminalCommand, and prTitle as empty strings "".`,
+      `Active surface: ${surface}. ${repo ? `Open repo: ${repo}#${branch}${filePath ? `/${filePath}` : ''}.` : 'No repository currently open.'}`,
+      `Keep answers concise, friendly, and easy to scan (short paragraphs or crisp steps). Provide 2-3 short, helpful suggestedFollowUps.`,
     ].join(' ');
 
+    const historyBlock =
+      normalizedHistory.length > 0
+        ? `Recent conversation:\n${normalizedHistory.map((m) => `${m.role}: ${m.text}`).join('\n')}`
+        : '';
+
     const userPrompt = [
-      `Developer request: ${prompt}`,
+      historyBlock,
+      `User message: ${cleanPrompt}`,
       incidentTicket ? `Active /bug Incident: ${JSON.stringify(incidentTicket)}` : '',
-      codeSnippet ? `Current file snippet (${filePath}):\n${codeSnippet}` : '',
+      codeSnippet && looksLikeCodeRequest ? `Open file (${filePath || 'file'}):\n${codeSnippet.slice(0, 6000)}` : '',
     ]
       .filter(Boolean)
       .join('\n\n');
 
-    const response = await ai.models.generateContent({
+    const geminiPromise = ai.models.generateContent({
       model: 'gemini-4-hydrogen',
       contents: userPrompt,
       config: {
@@ -3468,27 +3547,42 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
         responseSchema: {
           type: Type.OBJECT,
           properties: {
+            mode: {
+              type: Type.STRING,
+              description: 'Set to "chat" for general conversation, onboarding, or app/integration help, or "code" when returning a code patch/fix.',
+            },
             summary: {
               type: Type.STRING,
-              description: 'Concise analysis and collaborative recommendation for developers in the thread.',
+              description: 'Clear, friendly, concise answer for the user.',
             },
             suggestedPatch: {
               type: Type.STRING,
-              description: 'Exact replacement code snippet fixing or improving the target file.',
+              description: 'Code patch ONLY when mode is "code". Must be empty string "" when mode is "chat".',
             },
             recommendedTerminalCommand: {
               type: Type.STRING,
-              description: 'Terminal command to run in Codespace (e.g. npm test).',
+              description: 'Shell command to verify a code change ONLY when mode is "code". Empty string "" when mode is "chat".',
             },
             prTitle: {
               type: Type.STRING,
-              description: 'Conventional commit pull request title.',
+              description: 'Conventional commit PR title ONLY when mode is "code". Empty string "" when mode is "chat".',
+            },
+            suggestedFollowUps: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: '2-3 short, helpful next questions the user can click.',
             },
           },
-          required: ['summary', 'suggestedPatch', 'recommendedTerminalCommand', 'prTitle'],
+          required: ['mode', 'summary', 'suggestedPatch', 'recommendedTerminalCommand', 'prTitle'],
         },
       },
     });
+
+    const timeoutPromise = new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Gemini request timed out')), 12000)
+    );
+
+    const response = await Promise.race([geminiPromise, timeoutPromise]);
 
     const rawText = (response.text ?? '{}')
       .trim()
@@ -3496,12 +3590,22 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
       .replace(/```$/i, '')
       .trim();
     const parsed = JSON.parse(rawText);
+    const resolvedMode =
+      parsed.mode === 'code' && String(parsed.suggestedPatch || '').trim() ? 'code' : 'chat';
 
     return res.json({
       protocol: 'nerve.shark.v1',
       model: 'gemini-4-hydrogen',
+      mode: resolvedMode,
       participants,
-      ...parsed,
+      summary: String(parsed.summary || '').trim() || buildFallbackPayload().summary,
+      suggestedPatch: resolvedMode === 'code' ? String(parsed.suggestedPatch || '').trim() : '',
+      recommendedTerminalCommand:
+        resolvedMode === 'code' ? String(parsed.recommendedTerminalCommand || '').trim() : '',
+      prTitle: resolvedMode === 'code' ? String(parsed.prTitle || '').trim() : '',
+      suggestedFollowUps: Array.isArray(parsed.suggestedFollowUps)
+        ? parsed.suggestedFollowUps.slice(0, 3).map((s: unknown) => String(s))
+        : [],
     });
   } catch (error: any) {
     console.error('Gemini collaboration error:', error?.message || error);
