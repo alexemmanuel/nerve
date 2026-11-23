@@ -5,7 +5,7 @@ import path from 'path';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import nodemailer, { type Transporter } from 'nodemailer';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -286,9 +286,13 @@ function authenticateApiKey(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-// Shared Server-Side Gemini Client Utility
+// Shared Server-Side Gemini Client Utility & Live Failover Chain
+const GEMINI_PRIMARY_MODEL = 'gemini-4-hydrogen';
+const GEMINI_FALLBACK_MODEL = 'gemini-3.1-flash-lite';
+const GEMINI_MODEL_CHAIN = [GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL] as const;
+
 function getGenAIClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     return null;
   }
@@ -300,6 +304,58 @@ function getGenAIClient() {
       },
     },
   });
+}
+
+async function generateWithFailover(
+  ai: GoogleGenAI,
+  params: {
+    contents: string;
+    config?: Record<string, any>;
+    timeoutMs?: number;
+  }
+) {
+  const perAttemptTimeout = params.timeoutMs ?? 8000;
+  let lastError: any = null;
+
+  for (const model of GEMINI_MODEL_CHAIN) {
+    try {
+      const modelConfig = {
+        ...(params.config || {}),
+        ...(model === GEMINI_PRIMARY_MODEL
+          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+          : {}),
+      };
+      const attemptPromise = ai.models.generateContent({
+        model,
+        contents: params.contents,
+        config: modelConfig,
+      });
+      const timeoutPromise = new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error(`${model} request timed out`)), perAttemptTimeout)
+      );
+      const response = await Promise.race([attemptPromise, timeoutPromise]);
+      return { response, model };
+    } catch (err: any) {
+      lastError = err;
+      const msg = String(err?.message || err || '');
+      const isRetryable =
+        msg.includes('503') ||
+        msg.includes('UNAVAILABLE') ||
+        msg.includes('429') ||
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('timed out') ||
+        msg.includes('overloaded') ||
+        msg.includes('high demand');
+      if (!isRetryable) {
+        throw err;
+      }
+      console.warn(
+        `[Nerve Gemini Failover] ${model} unavailable (${msg.slice(0, 120)}), trying next model...`
+      );
+    }
+  }
+
+  throw lastError || new Error('All Gemini models failed');
 }
 
 // ============================================================================
@@ -322,21 +378,20 @@ app.get('/api/v1/health', async (req, res) => {
     | undefined;
 
   if (req.query.probe === 'gemini') {
-    const model = 'gemini-4-hydrogen';
     const startedAt = Date.now();
-    if (!geminiKeyConfigured) {
+    const ai = getGenAIClient();
+    if (!ai) {
       geminiLiveProbe = {
         active: false,
-        model,
+        model: GEMINI_PRIMARY_MODEL,
         latencyMs: 0,
         error: 'GEMINI_API_KEY is not configured in the server environment.',
       };
     } else {
       try {
-        const ai = new GoogleGenAI({ apiKey: rawKey });
-        const response = await ai.models.generateContent({
-          model,
+        const { response, model } = await generateWithFailover(ai, {
           contents: 'Reply with OK',
+          timeoutMs: 7000,
         });
         const text = (response.text || '').trim();
         geminiLiveProbe = {
@@ -348,7 +403,7 @@ app.get('/api/v1/health', async (req, res) => {
       } catch (err: any) {
         geminiLiveProbe = {
           active: false,
-          model,
+          model: GEMINI_PRIMARY_MODEL,
           latencyMs: Date.now() - startedAt,
           error: (err?.message || 'Gemini API call failed').slice(0, 220),
         };
@@ -362,7 +417,8 @@ app.get('/api/v1/health', async (req, res) => {
     engineVersion: '1.7.0',
     contactEmail: NERVE_CONTACT_EMAIL,
     runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
-    geminiModel: 'gemini-4-hydrogen',
+    geminiModel: GEMINI_PRIMARY_MODEL,
+    geminiFallbackModel: GEMINI_FALLBACK_MODEL,
     geminiKeyConfigured,
     geminiKeyPrefix,
     ...(geminiLiveProbe ? { geminiLiveProbe } : {}),
@@ -3538,9 +3594,9 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
       .filter(Boolean)
       .join('\n\n');
 
-    const geminiPromise = ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
+    const { response, model: resolvedModel } = await generateWithFailover(ai, {
       contents: userPrompt,
+      timeoutMs: 9000,
       config: {
         systemInstruction,
         responseMimeType: 'application/json',
@@ -3578,12 +3634,6 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
       },
     });
 
-    const timeoutPromise = new Promise<never>((_resolve, reject) =>
-      setTimeout(() => reject(new Error('Gemini request timed out')), 12000)
-    );
-
-    const response = await Promise.race([geminiPromise, timeoutPromise]);
-
     const rawText = (response.text ?? '{}')
       .trim()
       .replace(/^```json\s*/i, '')
@@ -3595,7 +3645,7 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
 
     return res.json({
       protocol: 'nerve.shark.v1',
-      model: 'gemini-4-hydrogen',
+      model: resolvedModel,
       mode: resolvedMode,
       participants,
       summary: String(parsed.summary || '').trim() || buildFallbackPayload().summary,
