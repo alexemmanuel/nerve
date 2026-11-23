@@ -25,23 +25,49 @@ const PRIVACY_SECTIONS: LegalSection[] = [
       'We collect only the information necessary to authenticate your session, connect your chosen developer workflows, and persist workspace state you explicitly create or sync.',
     ],
     bullets: [
-      'Account Identity: Display name, email address, user identifier, and profile photo provided when you sign in via Google OAuth, GitHub OAuth, or verified email/SMS activation.',
+      'Account Identity & Profile Setup: Display name, handle, pronouns, bio, company, location, optional https:// website link, email address, user identifier, and profile picture provided when you sign in via Google OAuth, GitHub OAuth, or verified email/SMS activation.',
       'Developer Workspace Data: Repository paths, code snippets, incident triage reports, developer peer handles, and SSH/API key metadata you configure inside Nerve.',
-      'Local Browser Persistence: Theme preference, active session metadata, cached workspace files, and offline action queues stored in browser localStorage or IndexedDB so you can work seamlessly across reloads.',
+      'Local Browser Persistence: Theme preference, active session metadata, locally uploaded profile photos (resized in your browser and never stored as inline base64 strings in Cloud Firestore), cached workspace files, and offline action queues stored in browser localStorage or IndexedDB.',
+    ],
+  },
+  {
+    id: 'privacy-github-sync',
+    heading: '02. GitHub Profile Sync & Strict Email-Match Requirement',
+    paragraphs: [
+      'Nerve allows signed-in users to edit their profile manually or optionally pull their GitHub profile setup (display name, avatar URL, bio, company, location, website, and public stats).',
+      'To prevent account impersonation and protect developer identity, GitHub profile sync is strictly restricted to accounts where your signed-in Nerve email address matches the verified or registered email address on that GitHub account.',
+    ],
+    bullets: [
+      'Same-Email Verification Gate: Before syncing any GitHub profile, Nerve verifies that your signed-in email matches the GitHub account email via GitHub OAuth verified emails (user:email scope) or public GitHub account/commit email records.',
+      'Automatic Denial on Mismatch: If your signed-in Nerve email address does not match the email address on the requested GitHub account, profile sync is automatically blocked and no profile data is imported.',
+      'In-Memory OAuth Tokens: GitHub OAuth access tokens obtained during sign-in are kept strictly in browser memory for the active session and cleared immediately when you log out.',
+    ],
+  },
+  {
+    id: 'privacy-firestore-rules',
+    heading: '03. Audited Database Access Rules (firestore.rules)',
+    paragraphs: [
+      'Cloud Firestore storage in Nerve is governed by strict, audited server-side security rules (firestore.rules) enforced directly by Google Cloud Firestore on every read and write request:',
+    ],
+    bullets: [
+      'Default-Deny Protection: All unspecified database collections and paths are denied by default (allow read, write: if false).',
+      'Owner-Only Isolation: Both /users_public/{userId} and /github_peers/{peerId} enforce strict owner-only access. Signed-in users can only read, create, update, or delete their own profile and peer records—never another user’s documents.',
+      'Zero-PII Public Records: Raw email addresses, phone numbers, and secrets are never written into Cloud Firestore profile documents.',
+      'Schema, Length & Safe URL Guards: Every Firestore write is validated for required field types, bounded string/integer limits, immutable ownership and creation timestamps, server-generated updatedAt timestamps, and strict https:// or http:// URL schemes on avatarUrl and website fields to block unsafe script links.',
     ],
   },
   {
     id: 'privacy-google-data',
-    heading: '02. Google Workspace & Gmail API Data Usage',
+    heading: '04. Google Workspace & Gmail API Data Usage',
     paragraphs: [
-      'When you authorize Google Sign-In with email dispatch permission (https://www.googleapis.com/auth/gmail.send) to send a 6-digit verification or activation code, Nerve keeps the OAuth access token strictly in memory for the active browser session.',
+      'When you authorize Google Sign-In with email dispatch permission (https://www.googleapis.com/auth/gmail.send) to send a 6-digit verification, activation, or password-reset code, Nerve keeps the OAuth access token strictly in memory for the active browser session.',
       'Nerve uses Gmail access solely to transmit the verification email you explicitly requested. We do not read, index, scan, store, or transfer your inbox messages, contacts, or Google user data to third parties or advertisers.',
       'Nerve’s use and transfer of information received from Google APIs adheres strictly to the Google API Services User Data Policy, including the Limited Use requirements.',
     ],
   },
   {
     id: 'privacy-e2ee',
-    heading: '03. End-to-End Encrypted Peer-to-Peer Messaging',
+    heading: '05. End-to-End Encrypted Peer-to-Peer Messaging',
     paragraphs: [
       'Peer-to-peer chat rooms and collaborative code-pairing packets use client-side Web Crypto encryption (AES-GCM-256 with PBKDF2-SHA256 key derivation).',
       'Signaling relays route encrypted ciphertext packets and ephemeral room presence metadata only. Plaintext chat contents and local code buffers are encrypted on your device prior to relay transmission.',
@@ -49,21 +75,21 @@ const PRIVACY_SECTIONS: LegalSection[] = [
   },
   {
     id: 'privacy-sharing',
-    heading: '04. Infrastructure Providers & Data Storage',
+    heading: '06. Infrastructure Providers & Data Storage',
     paragraphs: [
       'We do not sell personal data. Depending on the features you enable, limited data is processed by trusted infrastructure providers required to operate the service:',
     ],
     bullets: [
-      'Google Firebase (Authentication & Cloud Firestore): Manages sign-in sessions and stores public developer profile/peer records (users_public and github_peers) when authenticated.',
-      'GitHub API & OAuth: Resolves public repository trees, file contents, peer profiles, or SSH key listings when requested by your account.',
-      'Vercel & Node API Runtime: Serves application assets and executes API key, webhook, and incident endpoints initiated by your actions.',
+      'Google Firebase (Authentication & Cloud Firestore): Manages sign-in sessions, password-reset email dispatch, and owner-isolated profile/peer records (users_public and github_peers) protected by firestore.rules.',
+      'GitHub API & OAuth: Verifies matching account email addresses for profile sync and resolves public repository trees, file contents, peer profiles, or SSH key listings when requested by your account.',
+      'Vercel & Node API Runtime: Serves application assets and executes API key, password recovery (with per-user salted scrypt hashing and expiring 15-minute reset codes), webhook, and incident endpoints initiated by your actions.',
     ],
   },
   {
     id: 'privacy-controls',
-    heading: '05. Security, Retention & Your Choices',
+    heading: '07. Security, Password Recovery & Your Choices',
     paragraphs: [
-      'You remain in control of your account and integration credentials at all times. You may sign out from the top bar or mobile menu to immediately clear local verified sessions and in-memory OAuth tokens.',
+      'You remain in control of your account, profile setup, and credentials at all times. You may update or remove your profile picture, edit your profile fields manually, reset a forgotten password via verified email or 6-digit expiring reset code, or click Log out inside your Profile Settings or navigation drawer to immediately clear local sessions and in-memory Google/GitHub OAuth tokens.',
       'You can revoke Google or GitHub OAuth permissions at any time through your Google Account Security settings or GitHub Authorized OAuth Apps, and roll or remove API and SSH keys inside the Integration view.',
       'To request deletion of account records or ask privacy questions, contact us at nervep2p@gmail.com.',
     ],
@@ -75,41 +101,54 @@ const TERMS_SECTIONS: LegalSection[] = [
     id: 'terms-acceptance',
     heading: '01. Acceptance of Terms',
     paragraphs: [
-      'By accessing or using Nerve (https://nerve-tz8t.vercel.app), including its workspace messenger, incident response workflow, inline codespaces environment, and REST/SDK integration endpoints, you agree to be bound by these Terms & Conditions and our Privacy Policy.',
+      'By accessing or using Nerve (https://nerve-tz8t.vercel.app), including its workspace messenger, incident response workflow, inline codespaces environment, profile setup tools, and REST/SDK integration endpoints, you agree to be bound by these Terms & Conditions and our Privacy Policy.',
       'If you are using Nerve on behalf of an organization or engineering team, you represent that you have authority to bind that organization to these terms.',
     ],
   },
   {
     id: 'terms-accounts',
-    heading: '02. Accounts, API Keys & Credentials',
+    heading: '02. Accounts, Profile Setup & Credentials',
     paragraphs: [
-      'You are responsible for safeguarding your authentication credentials, Integration verification sessions, live/test API keys, and SSH deployment keys configured within Nerve.',
+      'You are responsible for safeguarding your authentication credentials, password recovery codes, Integration verification sessions, live/test API keys, and SSH deployment keys configured within Nerve.',
+      'You may configure your Nerve profile manually (including display name, bio, website, and uploaded profile picture) or optionally pull your GitHub profile setup under the strict same-email rule below.',
       'Integration API keys and SSH keys grant programmatic access to workspace callouts and configured remotes. You agree to rotate or revoke any credential immediately if you suspect unauthorized exposure.',
     ],
   },
   {
-    id: 'terms-acceptable-use',
-    heading: '03. Acceptable Use & Integration Responsibilities',
+    id: 'terms-github-email-match',
+    heading: '03. Strict Same-Email Policy for GitHub Profile Sync',
     paragraphs: [
-      'Nerve connects with external developer platforms and user-initiated endpoints. You agree to use these capabilities responsibly and lawfully:',
+      'You may only use, pull, or sync a GitHub profile into Nerve if the email address signed into your Nerve account matches the email address registered on that GitHub account.',
+    ],
+    bullets: [
+      'Accounts with mismatched email addresses are strictly prohibited from pulling or syncing a GitHub profile and will be blocked by Nerve’s verification gate.',
+      'You must not attempt to impersonate another developer, claim an unverified GitHub handle as synced, or submit malicious non-HTTP(S) links in profile website or avatar fields.',
+      'If you change your account email on GitHub or Nerve so they no longer match, you must edit your Nerve profile manually or sign in with the matching email address before syncing again.',
+    ],
+  },
+  {
+    id: 'terms-acceptable-use',
+    heading: '04. Acceptable Use, Database Rules & Integration Responsibilities',
+    paragraphs: [
+      'Nerve connects with external developer platforms and enforces strict Cloud Firestore security rules (firestore.rules) isolating every user’s records to their own authenticated account. You agree to use these capabilities responsibly and lawfully:',
     ],
     bullets: [
       'Only register repositories, SSH keys, webhooks, and external callout targets that you own or have explicit authorization to access.',
-      'Do not use email or SMS verification dispatch endpoints to send unsolicited messages, spam, or phishing payloads.',
-      'Do not attempt to bypass authentication gates, probe other users’ private resources, disrupt signaling servers, or distribute malware through peer-to-peer channels.',
+      'Do not use email, SMS verification, or password-reset dispatch endpoints to send unsolicited messages, spam, or phishing payloads.',
+      'Do not attempt to bypass authentication gates, circumvent firestore.rules owner-isolation checks, probe other users’ private resources, disrupt signaling servers, or distribute malware through peer-to-peer channels.',
     ],
   },
   {
     id: 'terms-ip',
-    heading: '04. Ownership of Your Code & Content',
+    heading: '05. Ownership of Your Code & Content',
     paragraphs: [
-      'You retain all intellectual property rights to source code, patches, pull request diffs, terminal logs, incident notes, and messages you create, edit, or transmit using Nerve.',
+      'You retain all intellectual property rights to source code, patches, pull request diffs, terminal logs, incident notes, profile assets, and messages you create, edit, or transmit using Nerve.',
       'By using Nerve’s workspace and incident workflows, you grant us only the limited technical right to process, render, and route that content at your direction to deliver the service.',
     ],
   },
   {
     id: 'terms-third-party',
-    heading: '05. Third-Party Services & Availability',
+    heading: '06. Third-Party Services & Availability',
     paragraphs: [
       'Nerve integrates with third-party services including GitHub, Google Firebase, Google OAuth/Gmail, and external CI/CD webhooks. Your use of those third-party services remains governed by their respective terms and policies.',
       'We may update, modify, or suspend features of Nerve to maintain reliability, security, or platform compatibility.',
@@ -117,7 +156,7 @@ const TERMS_SECTIONS: LegalSection[] = [
   },
   {
     id: 'terms-liability',
-    heading: '06. Disclaimer of Warranties & Limitation of Liability',
+    heading: '07. Disclaimer of Warranties & Limitation of Liability',
     paragraphs: [
       'Nerve is provided on an "as is" and "as available" basis without warranties of any kind, whether express or implied, including fitness for a particular purpose, non-infringement, or uninterrupted availability.',
       'To the fullest extent permitted by applicable law, Nerve and its operators shall not be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of data, code, profits, or service uptime resulting from your use of the platform or third-party integrations.',
@@ -125,7 +164,7 @@ const TERMS_SECTIONS: LegalSection[] = [
   },
   {
     id: 'terms-contact',
-    heading: '07. Changes to Terms & Contact',
+    heading: '08. Changes to Terms & Contact',
     paragraphs: [
       'We may revise these Terms & Conditions periodically. Material changes will be reflected by updating the effective date on this page. Continued use of Nerve after updates constitutes acceptance of the revised Terms.',
       'For questions regarding these Terms & Conditions, contact nervep2p@gmail.com.',
@@ -197,7 +236,7 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
           <div className="flex flex-wrap items-center gap-2 text-xs text-[#656d76] dark:text-[#8b949e] font-mono">
             <span>Nerve Platform</span>
             <span aria-hidden="true">·</span>
-            <span>Effective November 16, 2026</span>
+            <span>Effective November 22, 2026</span>
             <span aria-hidden="true">·</span>
             <span>nerve-tz8t.vercel.app</span>
           </div>
@@ -208,8 +247,8 @@ export const LegalDocumentView: React.FC<LegalDocumentViewProps> = ({
 
           <p className="text-sm sm:text-base text-[#656d76] dark:text-[#8b949e] leading-relaxed max-w-[68ch]">
             {isPrivacy
-              ? 'How Nerve handles authentication, Google Workspace verification scopes, end-to-end encrypted peer messaging, and locally cached developer workspace data.'
-              : 'Rules, account responsibilities, acceptable integration use, and service terms governing your use of the Nerve developer work surface and API.'}
+              ? 'How Nerve handles authentication, audited Firestore access rules, same-email GitHub profile sync, Google Workspace verification scopes, end-to-end encrypted messaging, and local workspace storage.'
+              : 'Rules, account and profile responsibilities, same-email GitHub profile sync policy, acceptable integration use, and service terms governing your use of the Nerve developer work surface and API.'}
           </p>
         </header>
 

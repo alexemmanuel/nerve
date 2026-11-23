@@ -7,6 +7,8 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   sendEmailVerification,
+  sendPasswordResetEmail,
+  updateProfile,
   signOut,
   onAuthStateChanged,
   User,
@@ -180,6 +182,8 @@ export function formatAuthErrorMessage(err: unknown, providerName: string = 'Git
 
 export const githubProvider = new GithubAuthProvider();
 githubProvider.addScope('read:user');
+githubProvider.addScope('user:email');
+export { GithubAuthProvider };
 
 export const SCOPES = ['https://www.googleapis.com/auth/gmail.send'];
 
@@ -197,10 +201,12 @@ export { GoogleAuthProvider };
 
 let isSigningInWithGoogle = false;
 let cachedGmailAccessToken: string | null = null;
+let cachedGitHubAccessToken: string | null = null;
 
 onAuthStateChanged(auth, (user: User | null) => {
   if (!user && !isSigningInWithGoogle) {
     cachedGmailAccessToken = null;
+    cachedGitHubAccessToken = null;
   }
 });
 
@@ -238,6 +244,14 @@ export function getCachedGmailAccessToken(): string | null {
 
 export function setCachedGmailAccessToken(token: string | null): void {
   cachedGmailAccessToken = token;
+}
+
+export function getCachedGitHubAccessToken(): string | null {
+  return cachedGitHubAccessToken;
+}
+
+export function setCachedGitHubAccessToken(token: string | null): void {
+  cachedGitHubAccessToken = token;
 }
 
 export enum OperationType {
@@ -399,50 +413,12 @@ export async function fetchRealGitHubUserProfile(username: string): Promise<Deve
   };
 }
 
-// Sync signed-in user's public profile and real GitHub peers in Firestore
+// Load signed-in user's saved GitHub peers from Firestore (never auto-seeds fake profile data)
 export async function syncAuthenticatedUserAndPeers(
   user: User,
-  githubHandleInput?: string
+  _githubHandleInput?: string
 ): Promise<DeveloperPeer[]> {
   const uid = user.uid;
-  const userDocPath = `users_public/${uid}`;
-
-  // Determine GitHub handle from providerData or input
-  const rawName =
-    githubHandleInput ||
-    (user as any).reloadUserInfo?.screenName ||
-    user.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
-    'github-developer';
-
-  const safeGithubHandle = String(rawName).slice(0, 80);
-  const safeDisplayName = String(user.displayName || safeGithubHandle).slice(0, 120);
-  const safeAvatarUrl = String(
-    user.photoURL || `https://avatars.githubusercontent.com/${safeGithubHandle}`
-  ).slice(0, 500);
-
-  try {
-    const existingSnap = await getDoc(doc(db, 'users_public', uid));
-    if (!existingSnap.exists()) {
-      await setDoc(doc(db, 'users_public', uid), {
-        uid,
-        githubHandle: safeGithubHandle,
-        displayName: safeDisplayName,
-        avatarUrl: safeAvatarUrl,
-        bio: 'Authenticated Nerve P2P Developer',
-        publicRepos: 42,
-        followers: 120,
-        following: 85,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    try {
-      handleFirestoreError(error, OperationType.WRITE, userDocPath);
-    } catch (e) {
-      console.warn('Firestore user profile sync non-fatal fallback:', e);
-    }
-  }
 
   // Load user's saved GitHub peers from Firestore
   const peersCollectionPath = 'github_peers';
@@ -715,11 +691,433 @@ export async function fetchConnectedUsersByEmail(
   return Array.from(resultMap.values());
 }
 
+export interface NerveUserProfile {
+  displayName: string;
+  githubHandle: string;
+  avatarUrl: string;
+  bio: string;
+  company: string;
+  location: string;
+  website: string;
+  pronouns: string;
+  publicRepos: number;
+  followers: number;
+  following: number;
+  syncedFromGitHub: boolean;
+  updatedAt?: string;
+}
+
+function isSafeHttpUrl(url: string): boolean {
+  return /^https?:\/\/.+/i.test(url.trim());
+}
+
+export type ProfileSyncPlatform = 'github' | 'bitbucket' | 'gitlab' | 'codeberg' | 'gitea';
+
+const PLATFORM_LABELS: Record<ProfileSyncPlatform, string> = {
+  github: 'GitHub',
+  bitbucket: 'Bitbucket',
+  gitlab: 'GitLab',
+  codeberg: 'Codeberg',
+  gitea: 'Gitea',
+};
+
+/**
+ * Verifies that the signed-in user's email address matches the email address
+ * registered on the target developer platform account (GitHub, Bitbucket, GitLab,
+ * Codeberg, or Gitea) before allowing profile sync into Nerve.
+ * Strictly blocks sync if the email addresses do not match.
+ */
+export async function verifyAndPullPlatformProfile(
+  platform: ProfileSyncPlatform,
+  username: string,
+  signedInEmail: string,
+  user?: User | null
+): Promise<NerveUserProfile> {
+  const cleanHandle = username.trim().replace(/^@/, '');
+  const cleanEmail = signedInEmail.trim().toLowerCase();
+  const platformLabel = PLATFORM_LABELS[platform] || 'Developer Platform';
+
+  if (!cleanHandle) {
+    throw new Error(`Enter a ${platformLabel} @username to pull.`);
+  }
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    throw new Error(
+      `You must be signed in with a valid email address matching your ${platformLabel} account to sync that profile.`
+    );
+  }
+
+  const githubProviderInfo = user?.providerData?.find((p) => p?.providerId === 'github.com');
+  const githubProviderEmail = String(githubProviderInfo?.email || '').trim().toLowerCase();
+  const authenticatedGithubLogin = String(
+    (user as any)?._tokenResponse?.screenName ||
+      (user as any)?.reloadUserInfo?.screenName ||
+      ''
+  )
+    .trim()
+    .replace(/^@/, '');
+
+  if (platform === 'github' && githubProviderEmail && githubProviderEmail !== cleanEmail) {
+    throw new Error(
+      `GitHub profile sync blocked: your signed-in email (${cleanEmail}) does not match your GitHub account email (${githubProviderEmail}). Only accounts using the same email address can sync.`
+    );
+  }
+
+  let backendReachable = false;
+  try {
+    const res = await fetch('/api/v1/profile/verify-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform,
+        username: cleanHandle,
+        signedInEmail: cleanEmail,
+        githubAccessToken: platform === 'github' ? cachedGitHubAccessToken || '' : '',
+        authenticatedGithubLogin: platform === 'github' ? authenticatedGithubLogin : '',
+        githubProviderEmail: platform === 'github' ? githubProviderEmail : '',
+      }),
+    });
+
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      backendReachable = true;
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(
+          data?.message ||
+            `${platformLabel} profile sync blocked: your signed-in email (${cleanEmail}) does not match @${cleanHandle}.`
+        );
+      }
+      if (data?.status === 'VERIFIED' && data?.profile) {
+        return data.profile as NerveUserProfile;
+      }
+      throw new Error(`${platformLabel} email verification failed.`);
+    }
+  } catch (err) {
+    if (backendReachable) {
+      throw err;
+    }
+    // Fall through to direct public API verification only when no Express backend is present (static deploy)
+  }
+
+  if (platform !== 'github') {
+    throw new Error(
+      `${platformLabel} profile sync requires the Nerve verification API to confirm that @${cleanHandle} belongs to ${cleanEmail}.`
+    );
+  }
+
+  // Direct GitHub API verification fallback (static deploy without Express backend) — equally strict!
+  const baseHeaders: Record<string, string> = { Accept: 'application/vnd.github+json' };
+  let verifiedRaw: any = null;
+
+  if (cachedGitHubAccessToken) {
+    try {
+      const authHeaders = {
+        ...baseHeaders,
+        Authorization: `Bearer ${cachedGitHubAccessToken}`,
+      };
+      const meRes = await fetch('https://api.github.com/user', { headers: authHeaders });
+      if (meRes.ok) {
+        const me = await meRes.json();
+        if (String(me?.login || '').toLowerCase() === cleanHandle.toLowerCase()) {
+          let matched =
+            typeof me?.email === 'string' && me.email.trim().toLowerCase() === cleanEmail;
+          if (!matched) {
+            const emailsRes = await fetch('https://api.github.com/user/emails', {
+              headers: authHeaders,
+            });
+            if (emailsRes.ok) {
+              const emailsList = await emailsRes.json();
+              matched =
+                Array.isArray(emailsList) &&
+                emailsList.some(
+                  (entry: any) =>
+                    entry?.verified &&
+                    typeof entry?.email === 'string' &&
+                    entry.email.trim().toLowerCase() === cleanEmail
+                );
+            }
+          }
+          if (matched) {
+            verifiedRaw = me;
+          }
+        }
+      }
+    } catch {
+      // Continue to public GitHub checks
+    }
+  }
+
+  let publicRaw: any = verifiedRaw;
+  if (!publicRaw) {
+    const ghRes = await fetch(`https://api.github.com/users/${encodeURIComponent(cleanHandle)}`, {
+      headers: baseHeaders,
+    });
+    if (ghRes.status === 404) {
+      throw new Error(`GitHub user "@${cleanHandle}" was not found.`);
+    }
+    if (!ghRes.ok) {
+      throw new Error(`Could not verify GitHub account @${cleanHandle} right now.`);
+    }
+    publicRaw = await ghRes.json();
+  }
+
+  if (
+    !verifiedRaw &&
+    typeof publicRaw?.email === 'string' &&
+    publicRaw.email.trim().toLowerCase() === cleanEmail
+  ) {
+    verifiedRaw = publicRaw;
+  }
+
+  if (
+    !verifiedRaw &&
+    authenticatedGithubLogin &&
+    authenticatedGithubLogin.toLowerCase() === cleanHandle.toLowerCase() &&
+    githubProviderEmail &&
+    githubProviderEmail === cleanEmail
+  ) {
+    verifiedRaw = publicRaw;
+  }
+
+  if (!verifiedRaw) {
+    try {
+      const searchRes = await fetch(
+        `https://api.github.com/search/users?q=${encodeURIComponent(`${cleanEmail} in:email`)}&per_page=10`,
+        { headers: baseHeaders }
+      );
+      if (searchRes.ok) {
+        const searchData = await searchRes.json();
+        if (
+          Array.isArray(searchData?.items) &&
+          searchData.items.some(
+            (item: any) => String(item?.login || '').toLowerCase() === cleanHandle.toLowerCase()
+          )
+        ) {
+          verifiedRaw = publicRaw;
+        }
+      }
+    } catch {
+      // Continue
+    }
+  }
+
+  if (!verifiedRaw) {
+    try {
+      const commitRes = await fetch(
+        `https://api.github.com/search/commits?q=${encodeURIComponent(`author:${cleanHandle} author-email:${cleanEmail}`)}&per_page=5`,
+        { headers: baseHeaders }
+      );
+      if (commitRes.ok) {
+        const commitData = await commitRes.json();
+        if (
+          Array.isArray(commitData?.items) &&
+          commitData.items.some(
+            (item: any) =>
+              String(item?.author?.login || '').toLowerCase() === cleanHandle.toLowerCase() &&
+              String(item?.commit?.author?.email || '').trim().toLowerCase() === cleanEmail
+          )
+        ) {
+          verifiedRaw = publicRaw;
+        }
+      }
+    } catch {
+      // Continue
+    }
+  }
+
+  if (!verifiedRaw) {
+    throw new Error(
+      `GitHub profile sync blocked: your signed-in email (${cleanEmail}) does not match the email address on GitHub account @${cleanHandle}. Only accounts using the same email address can sync.`
+    );
+  }
+
+  const login = String(verifiedRaw?.login || cleanHandle).slice(0, 80);
+  const rawWebsite = String(verifiedRaw?.blog || '').trim();
+  const normalizedWebsite =
+    rawWebsite && isSafeHttpUrl(rawWebsite)
+      ? rawWebsite
+      : rawWebsite && /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(rawWebsite)
+      ? `https://${rawWebsite}`
+      : '';
+  const rawAvatar = String(
+    verifiedRaw?.avatar_url || `https://avatars.githubusercontent.com/${encodeURIComponent(login)}`
+  ).trim();
+
+  return {
+    displayName: String(verifiedRaw?.name || login).slice(0, 120),
+    githubHandle: login,
+    avatarUrl: isSafeHttpUrl(rawAvatar)
+      ? rawAvatar.slice(0, 500)
+      : `https://avatars.githubusercontent.com/${encodeURIComponent(login)}`,
+    bio: String(verifiedRaw?.bio || '').slice(0, 300),
+    company: String(verifiedRaw?.company || '').replace(/^@/, '').trim().slice(0, 120),
+    location: String(verifiedRaw?.location || '').trim().slice(0, 120),
+    website: normalizedWebsite.slice(0, 240),
+    pronouns: '',
+    publicRepos: Math.max(0, Math.min(100000, Math.round(Number(verifiedRaw?.public_repos || 0)))),
+    followers: Math.max(0, Math.min(10000000, Math.round(Number(verifiedRaw?.followers || 0)))),
+    following: Math.max(0, Math.min(10000000, Math.round(Number(verifiedRaw?.following || 0)))),
+    syncedFromGitHub: true,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export async function verifyAndPullGitHubProfile(
+  username: string,
+  signedInEmail: string,
+  user?: User | null
+): Promise<NerveUserProfile> {
+  return verifyAndPullPlatformProfile('github', username, signedInEmail, user);
+}
+
+export async function fetchUserProfileFromFirestore(
+  user: User
+): Promise<Partial<NerveUserProfile> | null> {
+  const userDocPath = `users_public/${user.uid}`;
+  try {
+    const snap = await getDoc(doc(db, 'users_public', user.uid));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+
+    // Ignore legacy auto-seeded placeholder profile documents created before manual/verified sync
+    const isLegacyAutoSeeded =
+      !data.syncedFromGitHub &&
+      data.bio === 'Authenticated Nerve P2P Developer' &&
+      data.publicRepos === 42 &&
+      data.followers === 120 &&
+      data.following === 85;
+    if (isLegacyAutoSeeded) {
+      return null;
+    }
+
+    const rawHandle = typeof data.githubHandle === 'string' ? data.githubHandle : '';
+    const safeLoadedHandle =
+      !data.syncedFromGitHub && rawHandle.trim().toLowerCase() === 'developer' ? '' : rawHandle;
+
+    return {
+      displayName: typeof data.displayName === 'string' ? data.displayName : '',
+      githubHandle: safeLoadedHandle,
+      avatarUrl: typeof data.avatarUrl === 'string' ? data.avatarUrl : '',
+      bio: typeof data.bio === 'string' ? data.bio : '',
+      company: typeof data.company === 'string' ? data.company : '',
+      location: typeof data.location === 'string' ? data.location : '',
+      website: typeof data.website === 'string' ? data.website : '',
+      pronouns: typeof data.pronouns === 'string' ? data.pronouns : '',
+      publicRepos: typeof data.publicRepos === 'number' ? data.publicRepos : 0,
+      followers: typeof data.followers === 'number' ? data.followers : 0,
+      following: typeof data.following === 'number' ? data.following : 0,
+      syncedFromGitHub: Boolean(data.syncedFromGitHub),
+    };
+  } catch (error) {
+    try {
+      handleFirestoreError(error, OperationType.GET, userDocPath);
+    } catch (e) {
+      console.warn('Firestore user profile read fallback:', e);
+    }
+    return null;
+  }
+}
+
+export async function saveUserProfileToFirestore(
+  user: User,
+  profile: NerveUserProfile
+): Promise<void> {
+  const uid = user.uid;
+  const userDocPath = `users_public/${uid}`;
+
+  const safeGithubHandle = profile.githubHandle.trim().replace(/^@/, '').slice(0, 80);
+  const safeDisplayName = profile.displayName.trim().slice(0, 120);
+
+  // Firestore documents never store inline base64 images or non-http(s) URLs; keep avatarUrl as a valid <=500 char HTTP(S) URL
+  const candidateAvatar = profile.avatarUrl.trim();
+  const safeAvatarUrl = (
+    candidateAvatar && isSafeHttpUrl(candidateAvatar) && candidateAvatar.length <= 500
+      ? candidateAvatar
+      : safeGithubHandle
+      ? `https://avatars.githubusercontent.com/${encodeURIComponent(safeGithubHandle)}`
+      : ''
+  ).slice(0, 500);
+
+  const safeBio = profile.bio.trim().slice(0, 300);
+  const safeCompany = profile.company.trim().slice(0, 120);
+  const safeLocation = profile.location.trim().slice(0, 120);
+  const rawWebsite = profile.website.trim();
+  const safeWebsite = rawWebsite && isSafeHttpUrl(rawWebsite) ? rawWebsite.slice(0, 240) : '';
+  const safePronouns = profile.pronouns.trim().slice(0, 40);
+  const safePublicRepos = Math.max(0, Math.min(100000, Math.round(Number(profile.publicRepos || 0))));
+  const safeFollowers = Math.max(0, Math.min(10000000, Math.round(Number(profile.followers || 0))));
+  const safeFollowing = Math.max(0, Math.min(10000000, Math.round(Number(profile.following || 0))));
+  const safeSyncedFromGitHub = Boolean(profile.syncedFromGitHub);
+
+  try {
+    await updateProfile(user, {
+      ...(safeDisplayName ? { displayName: safeDisplayName } : {}),
+      ...(candidateAvatar && isSafeHttpUrl(candidateAvatar) && candidateAvatar.length <= 500
+        ? { photoURL: safeAvatarUrl }
+        : {}),
+    });
+  } catch {
+    // Non-fatal if auth profile update is restricted
+  }
+
+  // Never fabricate a fallback handle; only persist users_public when a real handle & name exist
+  if (!safeGithubHandle || !safeDisplayName || !safeAvatarUrl) {
+    return;
+  }
+
+  try {
+    const existingSnap = await getDoc(doc(db, 'users_public', uid));
+    if (existingSnap.exists()) {
+      await updateDoc(doc(db, 'users_public', uid), {
+        githubHandle: safeGithubHandle,
+        displayName: safeDisplayName,
+        avatarUrl: safeAvatarUrl,
+        bio: safeBio,
+        company: safeCompany,
+        location: safeLocation,
+        website: safeWebsite,
+        pronouns: safePronouns,
+        publicRepos: safePublicRepos,
+        followers: safeFollowers,
+        following: safeFollowing,
+        syncedFromGitHub: safeSyncedFromGitHub,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(doc(db, 'users_public', uid), {
+        uid,
+        githubHandle: safeGithubHandle,
+        displayName: safeDisplayName,
+        avatarUrl: safeAvatarUrl,
+        bio: safeBio,
+        company: safeCompany,
+        location: safeLocation,
+        website: safeWebsite,
+        pronouns: safePronouns,
+        publicRepos: safePublicRepos,
+        followers: safeFollowers,
+        following: safeFollowing,
+        syncedFromGitHub: safeSyncedFromGitHub,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (error) {
+    try {
+      handleFirestoreError(error, OperationType.WRITE, userDocPath);
+    } catch (e) {
+      console.warn('Firestore profile save fallback:', e);
+    }
+  }
+}
+
 export {
   signInWithPopup,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   sendEmailVerification,
+  sendPasswordResetEmail,
+  updateProfile,
   signOut,
   onAuthStateChanged,
 };

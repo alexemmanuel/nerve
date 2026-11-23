@@ -24,6 +24,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidHttpUrl(url, maxLen) {
+      return url is string && url.size() >= 1 && url.size() <= maxLen && url.matches('^https?://.+');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -51,6 +55,11 @@ service cloud.firestore {
           'displayName',
           'avatarUrl',
           'bio',
+          'company',
+          'location',
+          'website',
+          'pronouns',
+          'syncedFromGitHub',
           'publicRepos',
           'followers',
           'following',
@@ -61,8 +70,13 @@ service cloud.firestore {
         && data.uid == request.auth.uid
         && data.githubHandle is string && data.githubHandle.size() >= 1 && data.githubHandle.size() <= 80
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
-        && data.avatarUrl is string && data.avatarUrl.size() >= 1 && data.avatarUrl.size() <= 500
+        && isValidHttpUrl(data.avatarUrl, 500)
         && (!('bio' in data) || (data.bio is string && data.bio.size() <= 300))
+        && (!('company' in data) || (data.company is string && data.company.size() <= 120))
+        && (!('location' in data) || (data.location is string && data.location.size() <= 120))
+        && (!('website' in data) || (data.website is string && data.website.size() <= 240 && (data.website == '' || data.website.matches('^https?://.+'))))
+        && (!('pronouns' in data) || (data.pronouns is string && data.pronouns.size() <= 40))
+        && (!('syncedFromGitHub' in data) || (data.syncedFromGitHub is bool))
         && data.publicRepos is int && data.publicRepos >= 0 && data.publicRepos <= 100000
         && data.followers is int && data.followers >= 0 && data.followers <= 10000000
         && data.following is int && data.following >= 0 && data.following <= 10000000
@@ -105,7 +119,7 @@ service cloud.firestore {
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
         && data.role is string && data.role.size() >= 1 && data.role.size() <= 240
         && data.organization is string && data.organization.size() >= 1 && data.organization.size() <= 120
-        && data.avatarUrl is string && data.avatarUrl.size() >= 1 && data.avatarUrl.size() <= 500
+        && isValidHttpUrl(data.avatarUrl, 500)
         && data.youFollowThem is bool
         && data.theyFollowYou is bool
         && data.proofOfWorkCommits is int && data.proofOfWorkCommits >= 0 && data.proofOfWorkCommits <= 1000000
@@ -114,9 +128,9 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    // Collection 1: /users_public/{userId}
+    // Collection 1: /users_public/{userId} (strictly owner-scoped, zero PII)
     match /users_public/{userId} {
-      allow get: if isSignedIn() && isValidId(userId);
+      allow get: if isSignedIn() && isValidId(userId) && userId == request.auth.uid;
       allow list: if isSignedIn() && existing().uid == request.auth.uid;
 
       allow create: if isVerifiedUser()
@@ -139,6 +153,11 @@ service cloud.firestore {
             'displayName',
             'avatarUrl',
             'bio',
+            'company',
+            'location',
+            'website',
+            'pronouns',
+            'syncedFromGitHub',
             'publicRepos',
             'followers',
             'following',

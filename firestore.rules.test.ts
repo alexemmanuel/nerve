@@ -132,4 +132,23 @@ export const DIRTY_DOZEN_SECURITY_TESTS: DirtyDozenTestCase[] = [
     emailVerified: true,
     expectedOutcome: 'PERMISSION_DENIED',
   },
+  {
+    id: 13,
+    name: 'Cross-Tenant Read on /users_public/{otherUid}',
+    collectionPath: '/users_public/usr_2',
+    operation: 'get',
+    authUid: 'usr_1',
+    emailVerified: true,
+    expectedOutcome: 'PERMISSION_DENIED',
+  },
+  {
+    id: 14,
+    name: 'Unsafe javascript: URL Scheme in Profile Website / Avatar',
+    collectionPath: '/users_public/usr_1',
+    operation: 'update',
+    authUid: 'usr_1',
+    emailVerified: true,
+    payload: { website: 'javascript:alert(1)' },
+    expectedOutcome: 'PERMISSION_DENIED',
+  },
 ];

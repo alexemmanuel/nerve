@@ -18,6 +18,8 @@ import {
   ShieldCheck,
   Send,
   Trash2,
+  X,
+  Square,
 } from 'lucide-react';
 import { IncidentWorkflowReport } from '../data/incidentReports';
 
@@ -43,6 +45,9 @@ interface PullRequestDiffViewerProps {
   onDeployFix?: (ticketId: string) => Promise<void>;
   onRunTest?: (ticketId: string) => Promise<void>;
   onBackToOverview?: () => void;
+  onStopWorkflow?: () => void;
+  canStopWorkflow?: boolean;
+  onCancelWorkflow?: () => void;
   isDark?: boolean;
 }
 
@@ -155,6 +160,9 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
   onDeployFix,
   onRunTest,
   onBackToOverview,
+  onStopWorkflow,
+  canStopWorkflow = false,
+  onCancelWorkflow,
 }) => {
   const [viewMode, setViewMode] = useState<'unified' | 'split'>('unified');
   const [copiedPatch, setCopiedPatch] = useState<boolean>(false);
@@ -353,12 +361,41 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
                 Overview
               </button>
             )}
+
+            {onStopWorkflow && (
+              <button
+                type="button"
+                onClick={onStopWorkflow}
+                disabled={!canStopWorkflow}
+                title={
+                  canStopWorkflow
+                    ? 'Discard this investigating ticket and return to the incident list without creating a record'
+                    : 'Investigation complete — STOP is disabled'
+                }
+                className="px-2.5 py-1.5 rounded-md text-xs font-semibold border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-amber-500/10 text-amber-700 dark:text-amber-300 flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Square className="w-3 h-3 fill-current" />
+                <span>STOP</span>
+              </button>
+            )}
+
+            {onCancelWorkflow && (
+              <button
+                type="button"
+                onClick={onCancelWorkflow}
+                title="Exit current workflow and return to the incident list while keeping all records"
+                className="px-2.5 py-1.5 rounded-md text-xs font-medium border border-red-500/35 bg-red-500/5 hover:bg-red-500/15 text-red-600 dark:text-red-400 flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Cancel</span>
+              </button>
+            )}
           </div>
         </div>
 
         {/* Diff Statistics & Controls Bar */}
-        <div className="pt-3 border-t border-[#d0d7de] dark:border-[#30363d] flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-3 font-mono tabular-nums">
+        <div className="pt-3 border-t border-[#d0d7de] dark:border-[#30363d] flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2.5 font-mono tabular-nums">
             <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
               +{totalAdditions}
             </span>
@@ -371,13 +408,13 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* View Mode: Unified vs Split */}
             <div className="inline-flex rounded-md p-0.5 bg-[#f6f8fa] dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d]">
               <button
                 type="button"
                 onClick={() => setViewMode('unified')}
-                className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
                   viewMode === 'unified'
                     ? 'bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] shadow-xs'
                     : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
@@ -390,7 +427,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
               <button
                 type="button"
                 onClick={() => setViewMode('split')}
-                className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
                   viewMode === 'split'
                     ? 'bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] shadow-xs'
                     : 'text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3]'
@@ -405,7 +442,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
             <button
               type="button"
               onClick={handleCopyDiff}
-              className="px-2.5 py-1 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              className="px-2.5 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               title="Copy unified diff"
             >
               {copiedPatch ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
@@ -415,7 +452,7 @@ export const PullRequestDiffViewer: React.FC<PullRequestDiffViewerProps> = ({
             <button
               type="button"
               onClick={handleDownloadPatch}
-              className="px-2.5 py-1 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              className="px-2.5 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               title="Download .patch file"
             >
               <Download className="w-3.5 h-3.5" />

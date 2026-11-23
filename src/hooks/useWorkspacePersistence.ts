@@ -16,6 +16,7 @@ export interface PersistedWorkspaceState {
   highlightedLine: number;
   terminalLogs: string[];
   terminalCommandHistory: string[];
+  bookmarkedTerminalCommands: string[];
   patchApplied: boolean;
   keyEnvironment: 'live' | 'test';
   liveApiKey: string;
@@ -34,6 +35,10 @@ const DEFAULT_WORKSPACE_STATE: PersistedWorkspaceState = {
     'git status',
     'gh pr create --fill',
     'clr terminal',
+  ],
+  bookmarkedTerminalCommands: [
+    'npm run build && npm test',
+    'git status',
   ],
   patchApplied: false,
   keyEnvironment: 'live',
@@ -85,6 +90,16 @@ export function useWorkspacePersistence() {
           Array.isArray(parsed.terminalCommandHistory) && parsed.terminalCommandHistory.length > 0
             ? parsed.terminalCommandHistory
             : DEFAULT_WORKSPACE_STATE.terminalCommandHistory,
+        bookmarkedTerminalCommands: Array.isArray(parsed.bookmarkedTerminalCommands)
+          ? Array.from(
+              new Set(
+                parsed.bookmarkedTerminalCommands
+                  .filter((item: unknown): item is string => typeof item === 'string')
+                  .map((item: string) => item.trim())
+                  .filter(Boolean)
+              )
+            )
+          : DEFAULT_WORKSPACE_STATE.bookmarkedTerminalCommands,
         patchApplied:
           typeof parsed.patchApplied === 'boolean'
             ? parsed.patchApplied
@@ -160,6 +175,14 @@ export function useWorkspacePersistence() {
     }));
   };
 
+  const setBookmarkedTerminalCommands = (val: string[] | ((prev: string[]) => string[])) => {
+    setPersisted((prev) => ({
+      ...prev,
+      bookmarkedTerminalCommands:
+        typeof val === 'function' ? val(prev.bookmarkedTerminalCommands) : val,
+    }));
+  };
+
   const setPatchApplied = (val: boolean | ((prev: boolean) => boolean)) => {
     setPersisted((prev) => ({
       ...prev,
@@ -199,6 +222,8 @@ export function useWorkspacePersistence() {
     setTerminalLogs,
     terminalCommandHistory: persisted.terminalCommandHistory,
     setTerminalCommandHistory,
+    bookmarkedTerminalCommands: persisted.bookmarkedTerminalCommands,
+    setBookmarkedTerminalCommands,
     patchApplied: persisted.patchApplied,
     setPatchApplied,
     keyEnvironment: persisted.keyEnvironment,

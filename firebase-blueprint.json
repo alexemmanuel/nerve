@@ -26,15 +26,45 @@
         },
         "avatarUrl": {
           "type": "string",
-          "description": "GitHub avatar URL.",
+          "description": "HTTPS profile avatar URL.",
           "minLength": 1,
-          "maxLength": 500
+          "maxLength": 500,
+          "pattern": "^https?://.+"
         },
         "bio": {
           "type": "string",
           "description": "Developer bio or status.",
           "minLength": 0,
           "maxLength": 300
+        },
+        "company": {
+          "type": "string",
+          "description": "Developer company or organization.",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "location": {
+          "type": "string",
+          "description": "Developer location.",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "website": {
+          "type": "string",
+          "description": "Developer website or portfolio HTTPS URL.",
+          "minLength": 0,
+          "maxLength": 240,
+          "pattern": "^(|https?://.+)$"
+        },
+        "pronouns": {
+          "type": "string",
+          "description": "Developer pronouns.",
+          "minLength": 0,
+          "maxLength": 40
+        },
+        "syncedFromGitHub": {
+          "type": "boolean",
+          "description": "Whether the profile was synced from an email-matched GitHub account."
         },
         "publicRepos": {
           "type": "number",

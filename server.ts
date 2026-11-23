@@ -22,9 +22,13 @@ const io = isVercelRuntime
       },
       maxHttpBufferSize: 5e6,
     });
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '5mb' }));
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.status(200).json({ status: 'ok', port: PORT, timestamp: new Date().toISOString() });
+});
 
 // Allow third-party apps & external surfaces to fetch/call Nerve APIs and Engine endpoints directly
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -182,6 +186,12 @@ const ALL_NERVE_ECOSYSTEM_SCOPES: string[] = [
   'incidents.ai_log_triage',
   'incidents.line_numbered_log_triage',
   'incidents.d3_pipeline',
+  'incidents.stop_discard',
+  'incidents.workflow_cancel',
+  'incidents.log_delete',
+  'profile.email_verified_sync',
+  'profile.multi_platform_fetch',
+  'ui.avatar_account_menu',
   'webhooks.listen',
   'engine.third_party_callout',
   'integration.gmail_gate_autolock',
@@ -290,6 +300,8 @@ function authenticateApiKey(req: Request, res: Response, next: NextFunction) {
 const GEMINI_PRIMARY_MODEL = 'gemini-4-hydrogen';
 const GEMINI_FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 const GEMINI_MODEL_CHAIN = [GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL] as const;
+const GEMINI_MODEL_COOLDOWN_MS = 5 * 60 * 1000;
+const geminiModelCooldownUntil: Record<string, number> = {};
 
 function getGenAIClient() {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
@@ -306,6 +318,23 @@ function getGenAIClient() {
   });
 }
 
+function isRetryableGeminiError(err: any): boolean {
+  const status = Number(err?.status || err?.code || err?.error?.code || 0);
+  if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
+    return true;
+  }
+  const msg = String(err?.message || err || '').toLowerCase();
+  return (
+    msg.includes('503') ||
+    msg.includes('unavailable') ||
+    msg.includes('429') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('timed out') ||
+    msg.includes('overloaded') ||
+    msg.includes('high demand')
+  );
+}
+
 async function generateWithFailover(
   ai: GoogleGenAI,
   params: {
@@ -315,47 +344,64 @@ async function generateWithFailover(
   }
 ) {
   const perAttemptTimeout = params.timeoutMs ?? 8000;
+  const now = Date.now();
+
+  // Prioritize healthy models not in temporary 503/demand cooldown
+  const healthyModels = GEMINI_MODEL_CHAIN.filter(
+    (m) => (geminiModelCooldownUntil[m] || 0) <= now
+  );
+  const coolingModels = GEMINI_MODEL_CHAIN.filter(
+    (m) => (geminiModelCooldownUntil[m] || 0) > now
+  );
+  const orderedChain = [...healthyModels, ...coolingModels];
+
   let lastError: any = null;
 
-  for (const model of GEMINI_MODEL_CHAIN) {
+  for (let i = 0; i < orderedChain.length; i += 1) {
+    const model = orderedChain[i];
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
-      const modelConfig = {
-        ...(params.config || {}),
-        ...(model === GEMINI_PRIMARY_MODEL
-          ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-          : {}),
-      };
+      const sanitizedConfig: Record<string, any> = { ...(params.config || {}) };
+      if (model === GEMINI_PRIMARY_MODEL) {
+        delete sanitizedConfig.temperature;
+        delete sanitizedConfig.topP;
+        delete sanitizedConfig.topK;
+        delete sanitizedConfig.candidateCount;
+        sanitizedConfig.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+      }
+
       const attemptPromise = ai.models.generateContent({
         model,
         contents: params.contents,
-        config: modelConfig,
+        config: sanitizedConfig,
       });
-      const timeoutPromise = new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error(`${model} request timed out`)), perAttemptTimeout)
-      );
+      const timeoutPromise = new Promise<never>((_resolve, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error(`${model} request timed out`)),
+          perAttemptTimeout
+        );
+      });
       const response = await Promise.race([attemptPromise, timeoutPromise]);
+      delete geminiModelCooldownUntil[model];
       return { response, model };
     } catch (err: any) {
       lastError = err;
-      const msg = String(err?.message || err || '');
-      const isRetryable =
-        msg.includes('503') ||
-        msg.includes('UNAVAILABLE') ||
-        msg.includes('429') ||
-        msg.includes('RESOURCE_EXHAUSTED') ||
-        msg.includes('timed out') ||
-        msg.includes('overloaded') ||
-        msg.includes('high demand');
-      if (!isRetryable) {
+      if (!isRetryableGeminiError(err)) {
         throw err;
       }
-      console.warn(
-        `[Nerve Gemini Failover] ${model} unavailable (${msg.slice(0, 120)}), trying next model...`
-      );
+      // Temporarily cool down the busy model so subsequent calls skip straight to the healthy fallback
+      geminiModelCooldownUntil[model] = Date.now() + GEMINI_MODEL_COOLDOWN_MS;
+      if (i < orderedChain.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * (i + 1)));
+      }
+    } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
-  throw lastError || new Error('All Gemini models failed');
+  throw lastError || new Error('All Gemini models are temporarily unavailable');
 }
 
 // ============================================================================
@@ -414,7 +460,7 @@ app.get('/api/v1/health', async (req, res) => {
   res.json({
     ok: true,
     protocol: 'nerve.health.v1',
-    engineVersion: '1.7.0',
+    engineVersion: '1.8.0',
     contactEmail: NERVE_CONTACT_EMAIL,
     runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
     geminiModel: GEMINI_PRIMARY_MODEL,
@@ -760,7 +806,7 @@ app.post('/api/v1/integration/verify-access', (req, res) => {
 app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
   res.json({
     protocol: 'nerve.engine.gateway.v1',
-    engineVersion: '1.7.0',
+    engineVersion: '1.8.0',
     contactEmail: NERVE_CONTACT_EMAIL,
     runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
     geminiModel: 'gemini-4-hydrogen',
@@ -768,7 +814,9 @@ app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
     healthEndpoint: '/api/v1/health',
     geminiProbeEndpoint: '/api/v1/health?probe=gemini',
     corsEnabled: true,
-    universalRepoChannels: ['github', 'gitlab', 'bitbucket', 'gitea', 'custom-git'],
+    universalRepoChannels: ['github', 'gitlab', 'bitbucket', 'gitea', 'codeberg', 'custom-git'],
+    supportedProfileSyncPlatforms: ['github', 'bitbucket', 'gitlab', 'codeberg', 'gitea'],
+    emailMatchEnforcement: 'strict',
     availableEngines: [
       {
         engine: 'trust',
@@ -888,7 +936,22 @@ app.get('/api/v1/engine/manifest', authenticateApiKey, (req, res) => {
       {
         engine: 'users_by_email',
         endpoint: '/api/v1/users/by-email',
-        description: 'Resolve @users and GitHub handles connected to an authenticated or third-party email',
+        description: 'Auto-detect GitHub handles and @users connected to an authenticated or third-party email',
+      },
+      {
+        engine: 'profile_sync',
+        endpoint: '/api/v1/profile/verify-sync',
+        description: 'Import-only same-email verified profile sync for Bitbucket, GitLab, Codeberg, Gitea, and GitHub via inline width-matched push-down platform selector & @username fetch (no automatic name or username suggestions on sign-in)',
+      },
+      {
+        engine: 'incident_workflow_control',
+        endpoint: '/api/v1/incidents/workflow-control',
+        description: 'Control incident workflow lifecycle: STOP & discard investigating tickets (auto-deactivated once investigation completes), Cancel while keeping records, or delete recorded entries and activity logs',
+      },
+      {
+        engine: 'navigation_menu',
+        endpoint: '/api/v1/ui/navigation-menu',
+        description: 'Full-viewport left-aligned plain navigation drawer & UI notification contract: code-icon + user info at top when signed in, Nerve text alone when signed out, bold-only active tab, plain red Log out, and 6-second auto-dismiss warnings/popups with plain X cancel icon',
       },
       {
         engine: 'health_probe',
@@ -1451,7 +1514,7 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
       const geminiConfigured = Boolean(rawGeminiKey && rawGeminiKey !== 'MY_GEMINI_API_KEY');
       result = {
         protocol: 'nerve.shark.v1',
-        engineVersion: '1.7.0',
+        engineVersion: '1.8.0',
         model: 'gemini-4-hydrogen',
         agent: 'Nerve Shark Dual-Mode Chatbox & Coding Assistant',
         modes: ['chat', 'code'],
@@ -1626,15 +1689,102 @@ app.post('/api/v1/engine/call', authenticateApiKey, (req, res) => {
         protocol: 'nerve.users.by_email.v1',
         email: payload.email || callerEmail || NERVE_CONTACT_EMAIL,
         lookupSources: ['GitHub Email Profile', 'GitHub Commit Author', 'Nerve Account'],
+        autoDetectPlatform: 'github',
         endpoint: '/api/v1/users/by-email',
       };
       break;
+    case 'profile_sync': {
+      const requestedPlatform = String(payload.platform || 'bitbucket').trim().toLowerCase();
+      const allowedPlatforms = ['github', 'bitbucket', 'gitlab', 'codeberg', 'gitea'];
+      const safePlatform = allowedPlatforms.includes(requestedPlatform)
+        ? requestedPlatform
+        : 'bitbucket';
+      const targetUsername = String(payload.username || '').trim().replace(/^@/, '');
+      const targetEmail = String(payload.signedInEmail || callerEmail || '').trim().toLowerCase();
+      result = {
+        protocol: 'nerve.profile.verify_sync.v1',
+        environment: keyCtx.environment,
+        platform: safePlatform,
+        username: targetUsername ? `@${targetUsername}` : '@username',
+        signedInEmail: targetEmail || NERVE_CONTACT_EMAIL,
+        githubAutoDetectByEmail: true,
+        manualUsernamePlatforms: ['bitbucket', 'gitlab', 'codeberg', 'gitea', 'github'],
+        platformSelectorUi: 'inline_pushdown_dropdown',
+        selectorMatchesTriggerWidth: true,
+        shiftsBelowContentOnOpen: true,
+        emailMatchEnforcement: 'strict',
+        signInNameSuggestionsDisabled: true,
+        signInUsernameSuggestionsDisabled: true,
+        allowedProfileImportRule: 'import_only_same_email_git_platform',
+        vercelServerlessCompatible: true,
+        endpoint: '/api/v1/profile/verify-sync',
+        legacyAliasEndpoint: '/api/v1/github/verify-profile-sync',
+        scope: 'profile.email_verified_sync',
+      };
+      break;
+    }
+    case 'incident_workflow_control': {
+      const wfAction = String(payload.action || 'stop_discard').trim().toLowerCase();
+      const wfStatus = String(payload.status || 'Investigating').trim();
+      const isInvestigating = wfStatus.toLowerCase() === 'investigating';
+      const stopAllowed = wfAction !== 'stop_discard' || isInvestigating;
+      result = {
+        protocol: 'nerve.incidents.workflow_control.v1',
+        environment: keyCtx.environment,
+        ticketId: String(payload.ticketId || 'INC-709'),
+        action: wfAction,
+        currentStatus: wfStatus,
+        stopButtonActive: isInvestigating,
+        executed: stopAllowed,
+        recordPreserved: wfAction === 'cancel',
+        recordDiscarded: wfAction === 'stop_discard' && isInvestigating,
+        endpoint: '/api/v1/incidents/workflow-control',
+        scopes: ['incidents.stop_discard', 'incidents.workflow_cancel', 'incidents.log_delete'],
+      };
+      break;
+    }
+    case 'navigation_menu': {
+      const signedIn = Boolean(payload.isAuthenticated);
+      result = {
+        protocol: 'nerve.ui.navigation_drawer.v2',
+        environment: keyCtx.environment,
+        isAuthenticated: signedIn,
+        trigger: signedIn ? 'avatar' : 'drawer_icon',
+        showHamburgerIcon: !signedIn,
+        fullViewportOverlay: true,
+        optionsAlignment: 'left',
+        activeTabIndicator: 'bold_text_only',
+        plainButtonsNoHoverFill: true,
+        logoutTextColor: 'red',
+        showMenuHeading: false,
+        showOptionSubtitles: false,
+        headerMode: signedIn ? 'code_icon_with_user_info' : 'nerve_text_only',
+        userInfoPlacement: signedIn ? 'top_header' : 'none',
+        showUserInfoAtBottom: false,
+        includeProfileOption: signedIn,
+        showBottomProfileButtonBesideEmail: false,
+        notificationsPolicy: {
+          autoDismissMs: 6000,
+          manualDismissIcon: 'x_plain_no_hover',
+          appliesToAllWarningsAndActionPopups: true,
+        },
+        signInNameSuggestionsDisabled: true,
+        signInUsernameSuggestionsDisabled: true,
+        vercelServerlessCompatible: true,
+        navigationItems: signedIn
+          ? ['Profile', 'Workspace', 'Incidents', 'Integration', 'Privacy Policy', 'Terms & Conditions', 'Terminal', 'Appearance', 'New Issue', 'Log out']
+          : ['Workspace', 'Incidents', 'Integration', 'Privacy Policy', 'Terms & Conditions', 'Terminal', 'Appearance', 'New Issue', 'Sign In'],
+        endpoint: '/api/v1/ui/navigation-menu',
+        scope: 'ui.avatar_account_menu',
+      };
+      break;
+    }
     case 'health_probe': {
       const rawGeminiKey = (process.env.GEMINI_API_KEY || '').trim();
       const geminiConfigured = Boolean(rawGeminiKey && rawGeminiKey !== 'MY_GEMINI_API_KEY');
       result = {
         protocol: 'nerve.health.v1',
-        engineVersion: '1.7.0',
+        engineVersion: '1.8.0',
         contactEmail: NERVE_CONTACT_EMAIL,
         runtime: isVercelRuntime ? 'vercel-serverless' : 'node-express',
         geminiModel: 'gemini-4-hydrogen',
@@ -1689,14 +1839,43 @@ interface EmailAuthRecord {
   email: string;
   displayName: string;
   passwordHash: string;
+  passwordSalt?: string;
   phone?: string;
   channel: 'email' | 'sms';
   activationCode: string;
   activated: boolean;
   createdAt: string;
+  resetCode?: string;
+  resetCodeExpiresAt?: number;
 }
 
 const EMAIL_AUTH_STORE = new Map<string, EmailAuthRecord>();
+
+function hashEmailPassword(password: string, existingSalt?: string): { hash: string; salt: string } {
+  const salt = existingSalt || crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, `${AUTH_PASSWORD_SALT}:${salt}`, 64).toString('hex');
+  return { hash: derived, salt };
+}
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function verifyEmailPassword(password: string, storedHash: string, storedSalt?: string): boolean {
+  if (!storedHash) return false;
+  if (storedSalt) {
+    const candidate = hashEmailPassword(password, storedSalt).hash;
+    return timingSafeEqualStr(candidate, storedHash);
+  }
+  const legacyCandidate = crypto
+    .createHmac('sha256', AUTH_PASSWORD_SALT)
+    .update(password)
+    .digest('hex');
+  return timingSafeEqualStr(legacyCandidate, storedHash);
+}
 
 app.post('/api/v1/auth/send-activation', async (req, res) => {
   const {
@@ -1721,9 +1900,9 @@ app.post('/api/v1/auth/send-activation', async (req, res) => {
     return res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 6 characters.' });
   }
 
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  const passwordHash = crypto.createHmac('sha256', AUTH_PASSWORD_SALT).update(String(password)).digest('hex');
-  const displayName = cleanEmail.split('@')[0];
+  const code = String(crypto.randomInt(100000, 1000000));
+  const { hash: passwordHash, salt: passwordSalt } = hashEmailPassword(String(password));
+  const displayName = '';
   const deliveryChannel: 'email' | 'sms' = channel === 'sms' ? 'sms' : 'email';
 
   const record: EmailAuthRecord = {
@@ -1731,6 +1910,7 @@ app.post('/api/v1/auth/send-activation', async (req, res) => {
     email: cleanEmail,
     displayName,
     passwordHash,
+    passwordSalt,
     phone: String(phone || '').trim(),
     channel: deliveryChannel,
     activationCode: code,
@@ -1771,7 +1951,7 @@ app.post('/api/v1/auth/verify-activation', (req, res) => {
     return res.status(404).json({ error: 'ACCOUNT_NOT_FOUND', message: 'Sign-up request not found. Request a new code.' });
   }
 
-  if (record.activationCode !== cleanCode) {
+  if (!timingSafeEqualStr(record.activationCode, cleanCode)) {
     return res.status(400).json({ error: 'INVALID_CODE', message: 'Invalid activation code. Please check the 6-digit code.' });
   }
 
@@ -1796,11 +1976,10 @@ app.post('/api/v1/auth/email-signin', (req, res) => {
     return res.status(400).json({ error: 'MISSING_CREDENTIALS', message: 'Email and password are required.' });
   }
 
-  const passwordHash = crypto.createHmac('sha256', AUTH_PASSWORD_SALT).update(String(password)).digest('hex');
   const existing = EMAIL_AUTH_STORE.get(cleanEmail);
 
   if (existing) {
-    if (existing.passwordHash !== passwordHash) {
+    if (!verifyEmailPassword(String(password), existing.passwordHash, existing.passwordSalt)) {
       return res.status(401).json({ error: 'INVALID_PASSWORD', message: 'Incorrect password.' });
     }
     if (!existing.activated) {
@@ -1819,14 +1998,16 @@ app.post('/api/v1/auth/email-signin', (req, res) => {
     });
   }
 
-  // Register and sign in direct email/password account
+  // Register and sign in direct email/password account with per-user salted scrypt hash
   const newUid = `usr_${crypto.randomBytes(6).toString('hex')}`;
-  const displayName = cleanEmail.split('@')[0];
+  const displayName = '';
+  const { hash: passwordHash, salt: passwordSalt } = hashEmailPassword(String(password));
   EMAIL_AUTH_STORE.set(cleanEmail, {
     uid: newUid,
     email: cleanEmail,
     displayName,
     passwordHash,
+    passwordSalt,
     channel: 'email',
     activationCode: '000000',
     activated: true,
@@ -1840,6 +2021,118 @@ app.post('/api/v1/auth/email-signin', (req, res) => {
       email: cleanEmail,
       displayName,
     },
+  });
+});
+
+app.post('/api/v1/auth/forgot-password', async (req, res) => {
+  const { email = '', gmailAccessToken = '' } = req.body || {};
+  const cleanEmail = String(email).trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    return res.status(400).json({ error: 'INVALID_EMAIL', message: 'Enter a valid email address.' });
+  }
+
+  const authHeader = req.headers['authorization'] || '';
+  const bearerToken =
+    authHeader.startsWith('Bearer ') && !authHeader.includes('nrve_')
+      ? authHeader.slice(7).trim()
+      : String(gmailAccessToken).trim();
+
+  const resetCode = String(crypto.randomInt(100000, 1000000));
+  const resetCodeExpiresAt = Date.now() + 15 * 60 * 1000;
+
+  const existing = EMAIL_AUTH_STORE.get(cleanEmail);
+  if (existing) {
+    existing.resetCode = resetCode;
+    existing.resetCodeExpiresAt = resetCodeExpiresAt;
+    EMAIL_AUTH_STORE.set(cleanEmail, existing);
+  } else {
+    EMAIL_AUTH_STORE.set(cleanEmail, {
+      uid: `usr_${crypto.randomBytes(6).toString('hex')}`,
+      email: cleanEmail,
+      displayName: '',
+      passwordHash: '',
+      channel: 'email',
+      activationCode: '000000',
+      activated: true,
+      createdAt: new Date().toISOString(),
+      resetCode,
+      resetCodeExpiresAt,
+    });
+  }
+
+  const result = await dispatchVerificationEmail(
+    cleanEmail,
+    'Nerve Workspace - Password Reset Code',
+    resetCode,
+    'Password Reset Request',
+    bearerToken
+  );
+
+  return res.status(200).json({
+    protocol: 'nerve.auth.reset.v1',
+    status: 'RESET_CODE_SENT',
+    deliveredViaGmail: result.deliveredViaGmail,
+    destination: cleanEmail,
+    message: result.deliveredViaGmail
+      ? `A 6-digit password reset code has been sent to ${cleanEmail}. Check your inbox.`
+      : `Password reset initiated for ${cleanEmail}. Check your email for the reset link or 6-digit reset code.`,
+  });
+});
+
+app.post('/api/v1/auth/reset-password', (req, res) => {
+  const { email = '', code = '', newPassword = '' } = req.body || {};
+  const cleanEmail = String(email).trim().toLowerCase();
+  const cleanCode = String(code).trim();
+  const cleanPassword = String(newPassword);
+
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    return res.status(400).json({ error: 'INVALID_EMAIL', message: 'Enter a valid email address.' });
+  }
+  if (!cleanCode || cleanCode.length < 6) {
+    return res.status(400).json({ error: 'INVALID_CODE', message: 'Enter the 6-digit reset code.' });
+  }
+  if (!cleanPassword || cleanPassword.length < 6) {
+    return res.status(400).json({
+      error: 'WEAK_PASSWORD',
+      message: 'New password must be at least 6 characters.',
+    });
+  }
+
+  const record = EMAIL_AUTH_STORE.get(cleanEmail);
+  if (!record || !record.resetCode) {
+    return res.status(404).json({
+      error: 'RESET_NOT_FOUND',
+      message: 'No active password reset request found for this email. Request a new reset code.',
+    });
+  }
+  if (record.resetCodeExpiresAt && Date.now() > record.resetCodeExpiresAt) {
+    record.resetCode = undefined;
+    record.resetCodeExpiresAt = undefined;
+    EMAIL_AUTH_STORE.set(cleanEmail, record);
+    return res.status(400).json({
+      error: 'RESET_CODE_EXPIRED',
+      message: 'This reset code has expired. Please request a new code.',
+    });
+  }
+  if (!timingSafeEqualStr(record.resetCode, cleanCode)) {
+    return res.status(400).json({
+      error: 'INVALID_CODE',
+      message: 'Incorrect 6-digit reset code. Please check and try again.',
+    });
+  }
+
+  const { hash: passwordHash, salt: passwordSalt } = hashEmailPassword(cleanPassword);
+  record.passwordHash = passwordHash;
+  record.passwordSalt = passwordSalt;
+  record.activated = true;
+  record.resetCode = undefined;
+  record.resetCodeExpiresAt = undefined;
+  EMAIL_AUTH_STORE.set(cleanEmail, record);
+
+  return res.status(200).json({
+    protocol: 'nerve.auth.reset.v1',
+    status: 'PASSWORD_UPDATED',
+    message: 'Your password has been updated. You can now sign in with your new password.',
   });
 });
 
@@ -2439,6 +2732,684 @@ app.get('/api/v1/github/profile/:username', async (req, res) => {
   });
 });
 
+// Strict Same-Email Verification for Pulling / Syncing a Developer Profile into Nerve
+// Supports GitHub (auto-detected by email) plus Bitbucket, GitLab, Codeberg, and Gitea (@username fetch).
+// All platforms strictly require a verified email match against the signed-in email to prevent profile spoofing.
+type AllowedProfileSyncPlatform = 'github' | 'bitbucket' | 'gitlab' | 'codeberg' | 'gitea';
+
+const PROFILE_SYNC_ALLOWLIST: Record<
+  AllowedProfileSyncPlatform,
+  { label: string; apiBase: string }
+> = {
+  github: { label: 'GitHub', apiBase: 'https://api.github.com' },
+  bitbucket: { label: 'Bitbucket', apiBase: 'https://api.bitbucket.org/2.0' },
+  gitlab: { label: 'GitLab', apiBase: 'https://gitlab.com/api/v4' },
+  codeberg: { label: 'Codeberg', apiBase: 'https://codeberg.org/api/v1' },
+  gitea: { label: 'Gitea', apiBase: 'https://gitea.com/api/v1' },
+};
+
+function sanitizeExternalHttpUrl(rawUrl: unknown, maxLen: number): string {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\/.+/i.test(trimmed)) {
+    return trimmed.slice(0, maxLen);
+  }
+  if (/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(\/.*)?$/.test(trimmed)) {
+    return `https://${trimmed}`.slice(0, maxLen);
+  }
+  return '';
+}
+
+async function handleVerifyProfileSync(
+  req: Request,
+  res: Response,
+  forcedPlatform?: AllowedProfileSyncPlatform
+) {
+  const {
+    platform: rawPlatform = forcedPlatform || 'github',
+    username = '',
+    signedInEmail = '',
+    githubAccessToken = '',
+    platformAccessToken = '',
+    authenticatedGithubLogin = '',
+    githubProviderEmail = '',
+  } = req.body || {};
+
+  const normalizedPlatform = String(forcedPlatform || rawPlatform || 'github')
+    .trim()
+    .toLowerCase() as AllowedProfileSyncPlatform;
+
+  if (!Object.prototype.hasOwnProperty.call(PROFILE_SYNC_ALLOWLIST, normalizedPlatform)) {
+    return res.status(400).json({
+      error: 'INVALID_PLATFORM',
+      message: 'Supported platforms are github, bitbucket, gitlab, codeberg, and gitea.',
+    });
+  }
+
+  const platformConfig = PROFILE_SYNC_ALLOWLIST[normalizedPlatform];
+  const cleanHandle = String(username).trim().replace(/^@/, '');
+  const cleanEmail = String(signedInEmail).trim().toLowerCase();
+  const cleanToken = String(platformAccessToken || githubAccessToken || '').trim();
+  const cleanAuthedLogin = String(authenticatedGithubLogin).trim().replace(/^@/, '').toLowerCase();
+  const cleanProviderEmail = String(githubProviderEmail).trim().toLowerCase();
+  const keyCtx = (req as any).apiKeyContext || { environment: 'live', keyId: 'key_live_default_01' };
+
+  if (
+    !cleanHandle ||
+    cleanHandle.includes('..') ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/.test(cleanHandle)
+  ) {
+    return res.status(400).json({
+      error: 'INVALID_USERNAME',
+      message: `Enter a valid ${platformConfig.label} @username.`,
+    });
+  }
+
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    return res.status(403).json({
+      error: 'EMAIL_REQUIRED',
+      message: `You must be signed in with a valid email address that matches your ${platformConfig.label} account to sync that profile.`,
+    });
+  }
+
+  const baseHeaders: Record<string, string> = {
+    Accept: normalizedPlatform === 'github' ? 'application/vnd.github+json' : 'application/json',
+    'User-Agent': 'Nerve-Work-Surface',
+  };
+
+  // --------------------------------------------------------------------------
+  // Platform 1: GitHub
+  // --------------------------------------------------------------------------
+  if (normalizedPlatform === 'github') {
+    if (cleanProviderEmail && cleanProviderEmail !== cleanEmail) {
+      return res.status(403).json({
+        error: 'EMAIL_MISMATCH',
+        message: `GitHub profile sync blocked: your signed-in email (${cleanEmail}) does not match your GitHub account email (${cleanProviderEmail}). Only accounts using the same email address can sync.`,
+      });
+    }
+
+    let verifiedProfile: any = null;
+    let matchedBy = '';
+
+    if (cleanToken) {
+      try {
+        const authHeaders = {
+          ...baseHeaders,
+          Authorization: `Bearer ${cleanToken}`,
+        };
+        const meRes = await fetch(`${platformConfig.apiBase}/user`, { headers: authHeaders });
+        if (meRes.ok) {
+          const me = await meRes.json();
+          const meLogin = String(me?.login || '').toLowerCase();
+          if (meLogin === cleanHandle.toLowerCase()) {
+            let tokenEmailMatches =
+              typeof me?.email === 'string' && me.email.trim().toLowerCase() === cleanEmail;
+
+            if (!tokenEmailMatches) {
+              const emailsRes = await fetch(`${platformConfig.apiBase}/user/emails`, {
+                headers: authHeaders,
+              });
+              if (emailsRes.ok) {
+                const emailsList = await emailsRes.json();
+                if (Array.isArray(emailsList)) {
+                  tokenEmailMatches = emailsList.some(
+                    (entry: any) =>
+                      entry?.verified &&
+                      typeof entry?.email === 'string' &&
+                      entry.email.trim().toLowerCase() === cleanEmail
+                  );
+                }
+              }
+            }
+
+            if (tokenEmailMatches) {
+              verifiedProfile = me;
+              matchedBy = 'github_oauth_verified_email';
+            }
+          }
+        }
+      } catch {
+        // Continue to public GitHub checks below
+      }
+    }
+
+    let publicGhUser: any = verifiedProfile;
+    if (!publicGhUser) {
+      try {
+        const ghRes = await fetch(
+          `${platformConfig.apiBase}/users/${encodeURIComponent(cleanHandle)}`,
+          { headers: baseHeaders }
+        );
+        if (ghRes.status === 404) {
+          return res.status(404).json({
+            error: 'USER_NOT_FOUND',
+            message: `GitHub user "@${cleanHandle}" was not found.`,
+          });
+        }
+        if (!ghRes.ok) {
+          return res.status(502).json({
+            error: 'PLATFORM_API_UNAVAILABLE',
+            message: `Could not verify GitHub account @${cleanHandle} right now. Please try again shortly.`,
+          });
+        }
+        publicGhUser = await ghRes.json();
+      } catch {
+        return res.status(502).json({
+          error: 'PLATFORM_API_UNAVAILABLE',
+          message: `Could not reach GitHub to verify @${cleanHandle}.`,
+        });
+      }
+    }
+
+    if (
+      !matchedBy &&
+      typeof publicGhUser?.email === 'string' &&
+      publicGhUser.email.trim().toLowerCase() === cleanEmail
+    ) {
+      verifiedProfile = publicGhUser;
+      matchedBy = 'github_public_email';
+    }
+
+    if (
+      !matchedBy &&
+      cleanAuthedLogin &&
+      cleanAuthedLogin === cleanHandle.toLowerCase() &&
+      cleanProviderEmail &&
+      cleanProviderEmail === cleanEmail
+    ) {
+      verifiedProfile = publicGhUser;
+      matchedBy = 'github_provider_email';
+    }
+
+    if (!matchedBy) {
+      try {
+        const searchRes = await fetch(
+          `${platformConfig.apiBase}/search/users?q=${encodeURIComponent(`${cleanEmail} in:email`)}&per_page=10`,
+          { headers: baseHeaders }
+        );
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          if (
+            Array.isArray(searchData?.items) &&
+            searchData.items.some(
+              (item: any) => String(item?.login || '').toLowerCase() === cleanHandle.toLowerCase()
+            )
+          ) {
+            verifiedProfile = publicGhUser;
+            matchedBy = 'github_email_search';
+          }
+        }
+      } catch {
+        // Continue to commit author verification
+      }
+    }
+
+    if (!matchedBy) {
+      try {
+        const commitRes = await fetch(
+          `${platformConfig.apiBase}/search/commits?q=${encodeURIComponent(`author:${cleanHandle} author-email:${cleanEmail}`)}&per_page=5`,
+          { headers: baseHeaders }
+        );
+        if (commitRes.ok) {
+          const commitData = await commitRes.json();
+          if (
+            Array.isArray(commitData?.items) &&
+            commitData.items.some(
+              (item: any) =>
+                String(item?.author?.login || '').toLowerCase() === cleanHandle.toLowerCase() &&
+                String(item?.commit?.author?.email || '').trim().toLowerCase() === cleanEmail
+            )
+          ) {
+            verifiedProfile = publicGhUser;
+            matchedBy = 'github_commit_author_email';
+          }
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    if (!matchedBy || !verifiedProfile) {
+      return res.status(403).json({
+        error: 'EMAIL_MISMATCH',
+        platform: 'github',
+        environment: keyCtx.environment,
+        message: `GitHub profile sync blocked: your signed-in email (${cleanEmail}) does not match the email address on GitHub account @${cleanHandle}. Only accounts using the same email address can sync.`,
+      });
+    }
+
+    const login = String(verifiedProfile.login || cleanHandle).slice(0, 80);
+    const normalizedWebsite = sanitizeExternalHttpUrl(verifiedProfile.blog, 240);
+    const safeAvatar =
+      sanitizeExternalHttpUrl(verifiedProfile.avatar_url, 500) ||
+      `https://avatars.githubusercontent.com/${encodeURIComponent(login)}`;
+
+    return res.status(200).json({
+      protocol: 'nerve.profile.verify_sync.v1',
+      status: 'VERIFIED',
+      platform: 'github',
+      environment: keyCtx.environment,
+      matchedBy,
+      profile: {
+        displayName: String(verifiedProfile.name || login).slice(0, 120),
+        githubHandle: login,
+        avatarUrl: safeAvatar,
+        bio: String(verifiedProfile.bio || '').slice(0, 300),
+        company: String(verifiedProfile.company || '').replace(/^@/, '').trim().slice(0, 120),
+        location: String(verifiedProfile.location || '').trim().slice(0, 120),
+        website: normalizedWebsite,
+        pronouns: '',
+        publicRepos: Math.max(0, Math.min(100000, Math.round(Number(verifiedProfile.public_repos || 0)))),
+        followers: Math.max(0, Math.min(10000000, Math.round(Number(verifiedProfile.followers || 0)))),
+        following: Math.max(0, Math.min(10000000, Math.round(Number(verifiedProfile.following || 0)))),
+        syncedFromGitHub: true,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Platform 2: Bitbucket
+  // --------------------------------------------------------------------------
+  if (normalizedPlatform === 'bitbucket') {
+    let bbUser: any = null;
+    let matchedBy = '';
+
+    try {
+      const userRes = await fetch(
+        `${platformConfig.apiBase}/users/${encodeURIComponent(cleanHandle)}`,
+        { headers: baseHeaders }
+      );
+      if (userRes.status === 404) {
+        return res.status(404).json({
+          error: 'USER_NOT_FOUND',
+          message: `Bitbucket user "@${cleanHandle}" was not found.`,
+        });
+      }
+      if (!userRes.ok) {
+        return res.status(502).json({
+          error: 'PLATFORM_API_UNAVAILABLE',
+          message: `Could not verify Bitbucket account @${cleanHandle} right now.`,
+        });
+      }
+      bbUser = await userRes.json();
+    } catch {
+      return res.status(502).json({
+        error: 'PLATFORM_API_UNAVAILABLE',
+        message: `Could not reach Bitbucket to verify @${cleanHandle}.`,
+      });
+    }
+
+    if (cleanToken) {
+      try {
+        const authHeaders = { ...baseHeaders, Authorization: `Bearer ${cleanToken}` };
+        const [meRes, emailsRes] = await Promise.all([
+          fetch(`${platformConfig.apiBase}/user`, { headers: authHeaders }),
+          fetch(`${platformConfig.apiBase}/user/emails`, { headers: authHeaders }),
+        ]);
+        if (meRes.ok && emailsRes.ok) {
+          const me = await meRes.json();
+          const emailsData = await emailsRes.json();
+          const sameUser =
+            String(me?.username || '').toLowerCase() === cleanHandle.toLowerCase() ||
+            String(me?.nickname || '').toLowerCase() === cleanHandle.toLowerCase() ||
+            (bbUser?.uuid && me?.uuid === bbUser.uuid);
+          const emailMatches =
+            Array.isArray(emailsData?.values) &&
+            emailsData.values.some(
+              (entry: any) =>
+                entry?.is_confirmed &&
+                typeof entry?.email === 'string' &&
+                entry.email.trim().toLowerCase() === cleanEmail
+            );
+          if (sameUser && emailMatches) {
+            matchedBy = 'bitbucket_oauth_verified_email';
+          }
+        }
+      } catch {
+        // Continue to public commit author check
+      }
+    }
+
+    // Verify via public commit author emails on the user's Bitbucket repositories
+    let publicRepoCount = 0;
+    try {
+      const reposRes = await fetch(
+        `${platformConfig.apiBase}/repositories/${encodeURIComponent(cleanHandle)}?pagelen=5`,
+        { headers: baseHeaders }
+      );
+      if (reposRes.ok) {
+        const reposData = await reposRes.json();
+        publicRepoCount = Number(reposData?.size || reposData?.values?.length || 0);
+        if (!matchedBy && Array.isArray(reposData?.values)) {
+          for (const repoItem of reposData.values.slice(0, 3)) {
+            const slug = String(repoItem?.slug || '').trim();
+            if (!slug || !/^[a-zA-Z0-9._-]+$/.test(slug)) continue;
+            try {
+              const commitsRes = await fetch(
+                `${platformConfig.apiBase}/repositories/${encodeURIComponent(cleanHandle)}/${encodeURIComponent(slug)}/commits?pagelen=10`,
+                { headers: baseHeaders }
+              );
+              if (commitsRes.ok) {
+                const commitsData = await commitsRes.json();
+                const found =
+                  Array.isArray(commitsData?.values) &&
+                  commitsData.values.some((c: any) => {
+                    const rawAuthor = String(c?.author?.raw || '').toLowerCase();
+                    const authorUserUuid = String(c?.author?.user?.uuid || '');
+                    const emailInRaw = rawAuthor.includes(`<${cleanEmail}>`);
+                    const userMatches =
+                      !bbUser?.uuid || !authorUserUuid || authorUserUuid === bbUser.uuid;
+                    return emailInRaw && userMatches;
+                  });
+                if (found) {
+                  matchedBy = 'bitbucket_commit_author_email';
+                  break;
+                }
+              }
+            } catch {
+              // Try next repository
+            }
+          }
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
+
+    if (!matchedBy) {
+      return res.status(403).json({
+        error: 'EMAIL_MISMATCH',
+        platform: 'bitbucket',
+        environment: keyCtx.environment,
+        message: `Bitbucket profile sync blocked: your signed-in email (${cleanEmail}) could not be verified on Bitbucket account @${cleanHandle}. Only accounts using the same email address can sync.`,
+      });
+    }
+
+    const handle = String(bbUser?.username || bbUser?.nickname || cleanHandle).slice(0, 80);
+    const safeAvatar =
+      sanitizeExternalHttpUrl(bbUser?.links?.avatar?.href, 500) ||
+      `https://ui-avatars.com/api/?name=${encodeURIComponent(handle)}&background=2563eb&color=fff`;
+    const safeWebsite = sanitizeExternalHttpUrl(bbUser?.website || bbUser?.links?.html?.href, 240);
+
+    return res.status(200).json({
+      protocol: 'nerve.profile.verify_sync.v1',
+      status: 'VERIFIED',
+      platform: 'bitbucket',
+      environment: keyCtx.environment,
+      matchedBy,
+      profile: {
+        displayName: String(bbUser?.display_name || handle).slice(0, 120),
+        githubHandle: handle,
+        avatarUrl: safeAvatar,
+        bio: String(bbUser?.bio || '').slice(0, 300),
+        company: '',
+        location: String(bbUser?.location || '').trim().slice(0, 120),
+        website: safeWebsite,
+        pronouns: '',
+        publicRepos: Math.max(0, Math.min(100000, Math.round(publicRepoCount))),
+        followers: 0,
+        following: 0,
+        syncedFromGitHub: true,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Platform 3: GitLab
+  // --------------------------------------------------------------------------
+  if (normalizedPlatform === 'gitlab') {
+    let glUser: any = null;
+    let matchedBy = '';
+
+    try {
+      const searchRes = await fetch(
+        `${platformConfig.apiBase}/users?username=${encodeURIComponent(cleanHandle)}`,
+        { headers: baseHeaders }
+      );
+      if (!searchRes.ok) {
+        return res.status(502).json({
+          error: 'PLATFORM_API_UNAVAILABLE',
+          message: `Could not verify GitLab account @${cleanHandle} right now.`,
+        });
+      }
+      const list = await searchRes.json();
+      if (!Array.isArray(list) || list.length === 0) {
+        return res.status(404).json({
+          error: 'USER_NOT_FOUND',
+          message: `GitLab user "@${cleanHandle}" was not found.`,
+        });
+      }
+      const basicUser = list[0];
+      const detailRes = await fetch(
+        `${platformConfig.apiBase}/users/${encodeURIComponent(String(basicUser.id))}`,
+        { headers: baseHeaders }
+      );
+      glUser = detailRes.ok ? await detailRes.json() : basicUser;
+    } catch {
+      return res.status(502).json({
+        error: 'PLATFORM_API_UNAVAILABLE',
+        message: `Could not reach GitLab to verify @${cleanHandle}.`,
+      });
+    }
+
+    if (
+      typeof glUser?.public_email === 'string' &&
+      glUser.public_email.trim().toLowerCase() === cleanEmail
+    ) {
+      matchedBy = 'gitlab_public_email';
+    }
+
+    if (!matchedBy && cleanToken) {
+      try {
+        const authHeaders = { ...baseHeaders, Authorization: `Bearer ${cleanToken}` };
+        const meRes = await fetch(`${platformConfig.apiBase}/user`, { headers: authHeaders });
+        if (meRes.ok) {
+          const me = await meRes.json();
+          if (
+            String(me?.username || '').toLowerCase() === cleanHandle.toLowerCase() &&
+            String(me?.email || '').trim().toLowerCase() === cleanEmail
+          ) {
+            matchedBy = 'gitlab_oauth_verified_email';
+            glUser = me;
+          }
+        }
+      } catch {
+        // Continue to commit check
+      }
+    }
+
+    let publicRepoCount = 0;
+    try {
+      const projectsRes = await fetch(
+        `${platformConfig.apiBase}/users/${encodeURIComponent(cleanHandle)}/projects?per_page=5&visibility=public`,
+        { headers: baseHeaders }
+      );
+      if (projectsRes.ok) {
+        const projects = await projectsRes.json();
+        publicRepoCount = Array.isArray(projects) ? projects.length : 0;
+        if (!matchedBy && Array.isArray(projects)) {
+          for (const proj of projects.slice(0, 3)) {
+            if (!proj?.id) continue;
+            try {
+              const commitsRes = await fetch(
+                `${platformConfig.apiBase}/projects/${encodeURIComponent(String(proj.id))}/repository/commits?per_page=10`,
+                { headers: baseHeaders }
+              );
+              if (commitsRes.ok) {
+                const commits = await commitsRes.json();
+                if (
+                  Array.isArray(commits) &&
+                  commits.some(
+                    (c: any) =>
+                      typeof c?.author_email === 'string' &&
+                      c.author_email.trim().toLowerCase() === cleanEmail
+                  )
+                ) {
+                  matchedBy = 'gitlab_commit_author_email';
+                  break;
+                }
+              }
+            } catch {
+              // Next project
+            }
+          }
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
+
+    if (!matchedBy) {
+      return res.status(403).json({
+        error: 'EMAIL_MISMATCH',
+        platform: 'gitlab',
+        environment: keyCtx.environment,
+        message: `GitLab profile sync blocked: your signed-in email (${cleanEmail}) does not match GitLab account @${cleanHandle}. Only accounts using the same email address can sync.`,
+      });
+    }
+
+    const handle = String(glUser?.username || cleanHandle).slice(0, 80);
+    const safeAvatar =
+      sanitizeExternalHttpUrl(glUser?.avatar_url, 500) ||
+      `https://ui-avatars.com/api/?name=${encodeURIComponent(handle)}&background=2563eb&color=fff`;
+    const safeWebsite = sanitizeExternalHttpUrl(glUser?.website_url || glUser?.web_url, 240);
+
+    return res.status(200).json({
+      protocol: 'nerve.profile.verify_sync.v1',
+      status: 'VERIFIED',
+      platform: 'gitlab',
+      environment: keyCtx.environment,
+      matchedBy,
+      profile: {
+        displayName: String(glUser?.name || handle).slice(0, 120),
+        githubHandle: handle,
+        avatarUrl: safeAvatar,
+        bio: String(glUser?.bio || '').slice(0, 300),
+        company: String(glUser?.organization || '').trim().slice(0, 120),
+        location: String(glUser?.location || '').trim().slice(0, 120),
+        website: safeWebsite,
+        pronouns: String(glUser?.pronouns || '').trim().slice(0, 40),
+        publicRepos: Math.max(0, Math.min(100000, Math.round(publicRepoCount))),
+        followers: Math.max(0, Math.min(10000000, Math.round(Number(glUser?.followers || 0)))),
+        following: Math.max(0, Math.min(10000000, Math.round(Number(glUser?.following || 0)))),
+        syncedFromGitHub: true,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Platform 4 & 5: Codeberg / Gitea (Forgejo/Gitea API v1)
+  // --------------------------------------------------------------------------
+  let forgeUser: any = null;
+  let matchedBy = '';
+
+  try {
+    const userRes = await fetch(
+      `${platformConfig.apiBase}/users/${encodeURIComponent(cleanHandle)}`,
+      { headers: baseHeaders }
+    );
+    if (userRes.status === 404) {
+      return res.status(404).json({
+        error: 'USER_NOT_FOUND',
+        message: `${platformConfig.label} user "@${cleanHandle}" was not found.`,
+      });
+    }
+    if (!userRes.ok) {
+      return res.status(502).json({
+        error: 'PLATFORM_API_UNAVAILABLE',
+        message: `Could not verify ${platformConfig.label} account @${cleanHandle} right now.`,
+      });
+    }
+    forgeUser = await userRes.json();
+  } catch {
+    return res.status(502).json({
+      error: 'PLATFORM_API_UNAVAILABLE',
+      message: `Could not reach ${platformConfig.label} to verify @${cleanHandle}.`,
+    });
+  }
+
+  if (
+    typeof forgeUser?.email === 'string' &&
+    forgeUser.email.trim().toLowerCase() === cleanEmail
+  ) {
+    matchedBy = `${normalizedPlatform}_public_email`;
+  }
+
+  if (!matchedBy && cleanToken) {
+    try {
+      const authHeaders = { ...baseHeaders, Authorization: `token ${cleanToken}` };
+      const emailsRes = await fetch(`${platformConfig.apiBase}/user/emails`, {
+        headers: authHeaders,
+      });
+      if (emailsRes.ok) {
+        const emails = await emailsRes.json();
+        if (
+          Array.isArray(emails) &&
+          emails.some(
+            (e: any) =>
+              e?.verified &&
+              typeof e?.email === 'string' &&
+              e.email.trim().toLowerCase() === cleanEmail
+          )
+        ) {
+          matchedBy = `${normalizedPlatform}_token_verified_email`;
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  if (!matchedBy) {
+    return res.status(403).json({
+      error: 'EMAIL_MISMATCH',
+      platform: normalizedPlatform,
+      environment: keyCtx.environment,
+      message: `${platformConfig.label} profile sync blocked: your signed-in email (${cleanEmail}) does not match ${platformConfig.label} account @${cleanHandle}. Only accounts using the same email address can sync.`,
+    });
+  }
+
+  const handle = String(forgeUser?.login || forgeUser?.username || cleanHandle).slice(0, 80);
+  const safeAvatar =
+    sanitizeExternalHttpUrl(forgeUser?.avatar_url, 500) ||
+    `https://ui-avatars.com/api/?name=${encodeURIComponent(handle)}&background=2563eb&color=fff`;
+  const safeWebsite = sanitizeExternalHttpUrl(forgeUser?.website, 240);
+
+  return res.status(200).json({
+    protocol: 'nerve.profile.verify_sync.v1',
+    status: 'VERIFIED',
+    platform: normalizedPlatform,
+    environment: keyCtx.environment,
+    matchedBy,
+    profile: {
+      displayName: String(forgeUser?.full_name || handle).slice(0, 120),
+      githubHandle: handle,
+      avatarUrl: safeAvatar,
+      bio: String(forgeUser?.description || '').slice(0, 300),
+      company: '',
+      location: String(forgeUser?.location || '').trim().slice(0, 120),
+      website: safeWebsite,
+      pronouns: '',
+      publicRepos: 0,
+      followers: Math.max(0, Math.min(10000000, Math.round(Number(forgeUser?.followers_count || 0)))),
+      following: Math.max(0, Math.min(10000000, Math.round(Number(forgeUser?.following_count || 0)))),
+      syncedFromGitHub: true,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+}
+
+app.post('/api/v1/profile/verify-sync', authenticateApiKey, async (req, res) => {
+  await handleVerifyProfileSync(req, res);
+});
+
+app.post('/api/v1/github/verify-profile-sync', authenticateApiKey, async (req, res) => {
+  await handleVerifyProfileSync(req, res, 'github');
+});
+
 app.get('/api/v1/github/peers', async (_req, res) => {
   res.json({
     protocol: 'nerve.github.v1',
@@ -2461,7 +3432,10 @@ app.get('/api/v1/github/repo-files', async (req, res) => {
   let defaultBranch = 'main';
   let description = `GitHub repository ${repoSlug}`;
   let openIssues = 1;
+  let stars: number | undefined = undefined;
+  let htmlUrl = `https://github.com/${repoSlug}`;
   let filePath = 'README.md';
+  let treeFiles: string[] = [];
   let lines: string[] = [
     `// Repository: ${repoSlug}`,
     `// Loaded into Nerve Codespace`,
@@ -2470,35 +3444,95 @@ app.get('/api/v1/github/repo-files', async (req, res) => {
     `}`,
   ];
 
+  const TEXT_PRIORITY_REGEX =
+    /^(readme\.md|package\.json|src\/index\.(ts|tsx|js|jsx)|src\/app\.(ts|tsx|js|jsx)|index\.(ts|tsx|js|jsx)|main\.(py|go|rs|ts|js)|src\/main\.(rs|ts|go|py))$/i;
+  const BINARY_EXT_REGEX =
+    /\.(png|jpe?g|gif|webp|ico|bmp|svgz|pdf|zip|tar|gz|woff2?|ttf|eot|mp4|mp3|wav|exe|dll|so|dylib|class|jar|pyc|wasm|bin|lockb)$/i;
+
   try {
     const repoRes = await fetch(`https://api.github.com/repos/${repoSlug}`, { headers });
     if (repoRes.ok) {
       const repoData = await repoRes.json();
       defaultBranch = repoData.default_branch || 'main';
       description = repoData.description || description;
-      openIssues = Number(repoData.open_issues_count || 1);
+      openIssues = Number(repoData.open_issues_count || 0);
+      if (typeof repoData.stargazers_count === 'number') {
+        stars = repoData.stargazers_count;
+      }
+      if (typeof repoData.html_url === 'string' && repoData.html_url.trim()) {
+        htmlUrl = repoData.html_url;
+      }
     }
 
-    const contentsRes = await fetch(`https://api.github.com/repos/${repoSlug}/contents`, {
-      headers,
-    });
-    if (contentsRes.ok) {
-      const items = await contentsRes.json();
-      if (Array.isArray(items)) {
-        const candidate =
-          items.find(
-            (f: any) =>
-              f.type === 'file' &&
-              /\.(ts|tsx|js|rs|go|py|json|md)$/i.test(f.name) &&
-              f.size < 25000
-          ) || items.find((f: any) => f.type === 'file');
+    // Fetch full recursive git tree so all real repository files appear in the File Explorer
+    const treeRes = await fetch(
+      `https://api.github.com/repos/${repoSlug}/git/trees/${encodeURIComponent(defaultBranch)}?recursive=1`,
+      { headers }
+    );
+    if (treeRes.ok) {
+      const treeData = await treeRes.json();
+      if (Array.isArray(treeData.tree)) {
+        const blobs = treeData.tree
+          .filter(
+            (item: any) =>
+              item &&
+              item.type === 'blob' &&
+              typeof item.path === 'string' &&
+              !BINARY_EXT_REGEX.test(item.path) &&
+              !item.path.startsWith('.git/')
+          )
+          .map((item: any) => String(item.path));
+        treeFiles = blobs.slice(0, 150);
+      }
+    }
 
-        if (candidate && candidate.download_url) {
-          filePath = candidate.path || candidate.name;
-          const rawRes = await fetch(candidate.download_url);
-          if (rawRes.ok) {
-            const rawText = await rawRes.text();
-            lines = rawText.split('\n').slice(0, 80);
+    if (treeFiles.length > 0) {
+      const preferredEntry =
+        treeFiles.find((p) => TEXT_PRIORITY_REGEX.test(p)) ||
+        treeFiles.find((p) => /\.(ts|tsx|js|jsx|py|go|rs|java|rb|php|json|md)$/i.test(p)) ||
+        treeFiles[0];
+
+      if (preferredEntry) {
+        filePath = preferredEntry;
+        const encodedPath = preferredEntry
+          .split('/')
+          .map((seg) => encodeURIComponent(seg))
+          .join('/');
+        const rawRes = await fetch(
+          `https://raw.githubusercontent.com/${repoSlug}/${encodeURIComponent(defaultBranch)}/${encodedPath}`,
+          { headers: { 'User-Agent': 'Nerve-Work-Surface' } }
+        );
+        if (rawRes.ok) {
+          const rawText = await rawRes.text();
+          lines = rawText.split('\n').slice(0, 250);
+        }
+      }
+    } else {
+      const contentsRes = await fetch(`https://api.github.com/repos/${repoSlug}/contents`, {
+        headers,
+      });
+      if (contentsRes.ok) {
+        const items = await contentsRes.json();
+        if (Array.isArray(items)) {
+          treeFiles = items
+            .filter((f: any) => f.type === 'file' && typeof f.path === 'string')
+            .map((f: any) => String(f.path));
+
+          const candidate =
+            items.find(
+              (f: any) =>
+                f.type === 'file' &&
+                /\.(ts|tsx|js|rs|go|py|json|md)$/i.test(f.name) &&
+                f.size < 40000
+            ) || items.find((f: any) => f.type === 'file');
+
+          if (candidate && candidate.download_url) {
+            filePath = candidate.path || candidate.name;
+            const rawRes = await fetch(candidate.download_url);
+            if (rawRes.ok) {
+              const rawText = await rawRes.text();
+              lines = rawText.split('\n').slice(0, 250);
+            }
           }
         }
       }
@@ -2513,9 +3547,57 @@ app.get('/api/v1/github/repo-files', async (req, res) => {
     branch: defaultBranch,
     description,
     openPrs: openIssues,
+    openIssues,
+    stars,
+    htmlUrl,
     filePath,
+    treeFiles,
     lines,
   });
+});
+
+// Lazy Raw File Content Proxy for GitHub File Explorer
+app.get('/api/v1/github/file-content', async (req, res) => {
+  const repoSlug = String(req.query.repo || '')
+    .trim()
+    .replace(/^\/+|\/+$/g, '');
+  const branch = String(req.query.branch || 'main').trim() || 'main';
+  const filePath = String(req.query.path || '').trim().replace(/^\/+/, '');
+
+  if (
+    !repoSlug ||
+    !repoSlug.includes('/') ||
+    !filePath ||
+    filePath.includes('..') ||
+    repoSlug.includes('..')
+  ) {
+    return res.status(400).json({ error: 'Valid repo and file path are required' });
+  }
+
+  try {
+    const encodedPath = filePath
+      .split('/')
+      .map((seg) => encodeURIComponent(seg))
+      .join('/');
+    const rawRes = await fetch(
+      `https://raw.githubusercontent.com/${repoSlug}/${encodeURIComponent(branch)}/${encodedPath}`,
+      { headers: { 'User-Agent': 'Nerve-Work-Surface' } }
+    );
+    if (!rawRes.ok) {
+      return res.status(rawRes.status).json({ error: 'Unable to load file content from GitHub' });
+    }
+    const rawText = await rawRes.text();
+    const lines = rawText.split('\n').slice(0, 400);
+    return res.json({
+      ok: true,
+      repo: repoSlug,
+      branch,
+      path: filePath,
+      lines,
+    });
+  } catch {
+    return res.status(502).json({ error: 'Failed to fetch raw file content' });
+  }
 });
 
 // GitHub Search API Proxy (Search external repositories & GitHub peers to add to local tracking)
@@ -2556,22 +3638,60 @@ app.get('/api/v1/github/search', async (req, res) => {
   };
 
   if (type === 'all' || type === 'repositories') {
+    const mapGitHubRepo = (item: any) => ({
+      fullName: String(item.full_name || `${item.owner?.login || 'github'}/${item.name || q}`),
+      description: String(
+        item.description || 'External GitHub repository tracked in Nerve Workspace.'
+      ),
+      defaultBranch: String(item.default_branch || 'main'),
+      stars: Number(item.stargazers_count ?? 0),
+      language: String(item.language || 'Code'),
+      openIssues: Number(item.open_issues_count ?? 0),
+    });
+
+    const ownerCandidate = q.includes('/')
+      ? q.split('/')[0].trim()
+      : !/\s/.test(q)
+      ? q.replace(/^@/, '').trim()
+      : '';
+
+    const seen = new Set<string>();
+    const pushUnique = (items: any[]) => {
+      for (const item of items) {
+        const mapped = mapGitHubRepo(item);
+        const key = mapped.fullName.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          repositories.push(mapped);
+        }
+      }
+    };
+
     try {
-      const repoRes = await fetch(
-        `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=4`,
-        { headers }
-      );
-      if (repoRes.ok) {
-        const repoData = await repoRes.json();
-        if (Array.isArray(repoData.items)) {
-          repositories = repoData.items.map((item: any) => ({
-            fullName: String(item.full_name || `${item.owner?.login || 'github'}/${item.name || q}`),
-            description: String(item.description || 'External GitHub repository tracked in Nerve Workspace.'),
-            defaultBranch: String(item.default_branch || 'main'),
-            stars: Number(item.stargazers_count || 120),
-            language: String(item.language || 'TypeScript'),
-            openIssues: Number(item.open_issues_count || 3),
-          }));
+      const requests: Array<ReturnType<typeof fetch>> = [
+        fetch(
+          `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=30`,
+          { headers }
+        ),
+      ];
+      if (ownerCandidate && /^[a-zA-Z0-9-]+$/.test(ownerCandidate)) {
+        requests.unshift(
+          fetch(
+            `https://api.github.com/users/${encodeURIComponent(ownerCandidate)}/repos?type=public&sort=updated&per_page=100`,
+            { headers }
+          )
+        );
+      }
+
+      const settled = await Promise.allSettled(requests);
+      for (const result of settled) {
+        if (result.status !== 'fulfilled' || !result.value.ok) continue;
+        const payload: any = await result.value.json();
+        if (Array.isArray(payload)) {
+          // /users/:owner/repos returns an array of all public repos
+          pushUnique(payload);
+        } else if (Array.isArray(payload?.items)) {
+          pushUnique(payload.items);
         }
       }
     } catch {
@@ -2605,7 +3725,7 @@ app.get('/api/v1/github/search', async (req, res) => {
   if (type === 'all' || type === 'users') {
     try {
       const userRes = await fetch(
-        `https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=4`,
+        `https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=15`,
         { headers }
       );
       if (userRes.ok) {
@@ -3167,6 +4287,176 @@ app.get('/api/v1/incidents/:ticketId', authenticateApiKey, (req, res) => {
   });
 });
 
+// Incident Workflow Control: STOP & Discard (Investigating only), Cancel (preserve records), Delete Entry / Activity Log
+app.post('/api/v1/incidents/workflow-control', authenticateApiKey, (req, res) => {
+  const {
+    action = 'stop_discard',
+    ticketId = '',
+    status = 'Investigating',
+    logIndex,
+  } = req.body || {};
+
+  const cleanAction = String(action).trim().toLowerCase();
+  const cleanTicketId = String(ticketId).trim();
+  const cleanStatus = String(status || 'Investigating').trim();
+  const keyCtx = (req as any).apiKeyContext || { environment: 'live', keyId: 'key_live_default_01' };
+
+  if (!cleanTicketId || !/^[a-zA-Z0-9_-]{1,64}$/.test(cleanTicketId)) {
+    return res.status(400).json({
+      error: 'INVALID_TICKET_ID',
+      message: 'Provide a valid ticketId (e.g., INC-709).',
+    });
+  }
+
+  const stored = INCIDENTS_STORE.get(cleanTicketId);
+
+  if (cleanAction === 'stop_discard') {
+    const isInvestigating =
+      cleanStatus.toLowerCase() === 'investigating' &&
+      (!stored || stored.status === 'Open');
+
+    if (!isInvestigating) {
+      return res.status(409).json({
+        protocol: 'nerve.incidents.workflow_control.v1',
+        error: 'INVESTIGATION_ALREADY_COMPLETE',
+        stopButtonDeactivated: true,
+        ticketId: cleanTicketId,
+        currentStatus: stored ? stored.status : cleanStatus,
+        environment: keyCtx.environment,
+        message: 'Investigation is already complete; STOP is deactivated to protect completed workflow progress.',
+      });
+    }
+
+    INCIDENTS_STORE.delete(cleanTicketId);
+    return res.status(200).json({
+      protocol: 'nerve.incidents.workflow_control.v1',
+      status: 'DISCARDED_NO_RECORD',
+      action: 'stop_discard',
+      ticketId: cleanTicketId,
+      recordCreated: false,
+      stopButtonDeactivated: false,
+      environment: keyCtx.environment,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (cleanAction === 'cancel') {
+    return res.status(200).json({
+      protocol: 'nerve.incidents.workflow_control.v1',
+      status: 'WORKFLOW_EXITED_RECORDS_PRESERVED',
+      action: 'cancel',
+      ticketId: cleanTicketId,
+      recordsPreserved: true,
+      environment: keyCtx.environment,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (cleanAction === 'delete_entry') {
+    const existed = INCIDENTS_STORE.delete(cleanTicketId);
+    return res.status(200).json({
+      protocol: 'nerve.incidents.workflow_control.v1',
+      status: 'ENTRY_DELETED',
+      action: 'delete_entry',
+      ticketId: cleanTicketId,
+      existedInStore: existed,
+      environment: keyCtx.environment,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (cleanAction === 'delete_activity_log') {
+    const idx = Number(logIndex);
+    if (!Number.isInteger(idx) || idx < 0) {
+      return res.status(400).json({
+        error: 'INVALID_LOG_INDEX',
+        message: 'Provide a non-negative integer logIndex to delete an activity log row.',
+      });
+    }
+    if (stored && idx < stored.logs.length) {
+      stored.logs.splice(idx, 1);
+    }
+    return res.status(200).json({
+      protocol: 'nerve.incidents.workflow_control.v1',
+      status: 'ACTIVITY_LOG_DELETED',
+      action: 'delete_activity_log',
+      ticketId: cleanTicketId,
+      deletedLogIndex: idx,
+      remainingLogsCount: stored ? stored.logs.length : undefined,
+      environment: keyCtx.environment,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return res.status(400).json({
+    error: 'INVALID_WORKFLOW_ACTION',
+    message: 'Supported actions: stop_discard, cancel, delete_entry, delete_activity_log.',
+  });
+});
+
+// Full-Viewport Right-Aligned Navigation Drawer Contract (for third-party UI integrations)
+app.post('/api/v1/ui/navigation-menu', authenticateApiKey, (req, res) => {
+  const { isAuthenticated = false, email = '' } = req.body || {};
+  const signedIn = Boolean(isAuthenticated);
+  const keyCtx = (req as any).apiKeyContext || { environment: 'live', keyId: 'key_live_default_01' };
+
+  return res.status(200).json({
+    protocol: 'nerve.ui.navigation_drawer.v2',
+    status: 'OK',
+    environment: keyCtx.environment,
+    scope: 'ui.avatar_account_menu',
+    isAuthenticated: signedIn,
+    trigger: signedIn ? 'avatar' : 'drawer_icon',
+    showHamburgerIcon: !signedIn,
+    fullViewportOverlay: true,
+    optionsAlignment: 'left',
+    activeTabIndicator: 'bold_text_only',
+    plainButtonsNoHoverFill: true,
+    logoutTextColor: 'red',
+    showMenuHeading: false,
+    showOptionSubtitles: false,
+    headerMode: signedIn ? 'code_icon_with_user_info' : 'nerve_text_only',
+    userInfoPlacement: signedIn ? 'top_header' : 'none',
+    showUserInfoAtBottom: false,
+    includeProfileOption: signedIn,
+    showBottomProfileButtonBesideEmail: false,
+    notificationsPolicy: {
+      autoDismissMs: 6000,
+      manualDismissIcon: 'x_plain_no_hover',
+      appliesToAllWarningsAndActionPopups: true,
+    },
+    signInNameSuggestionsDisabled: true,
+    signInUsernameSuggestionsDisabled: true,
+    vercelServerlessCompatible: true,
+    ...(signedIn && email ? { signedInEmail: String(email).trim().toLowerCase() } : {}),
+    navigationItems: signedIn
+      ? [
+          'Profile',
+          'Workspace',
+          'Incidents',
+          'Integration',
+          'Privacy Policy',
+          'Terms & Conditions',
+          'Terminal',
+          'Appearance',
+          'New Issue',
+          'Log out',
+        ]
+      : [
+          'Workspace',
+          'Incidents',
+          'Integration',
+          'Privacy Policy',
+          'Terms & Conditions',
+          'Terminal',
+          'Appearance',
+          'New Issue',
+          'Sign In',
+        ],
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Real-Time GitHub Webhook Listener (Auto-triggers incident creation on issues.opened or resolves on pull_request.merged)
 app.post('/api/v1/webhooks/github', authenticateApiKey, (req, res) => {
   const eventType = ((req.headers['x-github-event'] as string) || req.body?.event || 'issues').toLowerCase();
@@ -3573,7 +4863,7 @@ app.post('/api/v1/copilot/collaborate', authenticateApiKey, async (req, res) => 
     const systemInstruction = [
       `You are Nerve Shark, the friendly, clear, dual-mode AI assistant built into Nerve (a GitHub-native, end-to-end encrypted developer workspace).`,
       `You serve two roles seamlessly:`,
-      `1. App Guide & Chatbox (mode="chat"): Help users easily understand and use Nerve in plain, approachable language—without unnecessary jargon. Know Nerve's exact UI and features: Top tabs (Workspace, Incidents, Integration); Workspace left sidebar (Search repos/peers, Nerve Shark chatbox, Direct Messages with E2EE AES-GCM-256, Tracked Repositories, Focus Mode toggle, Code & Terminal panel); Right panel (Code Viewer with deep links like owner/repo#main/file.ts:L42 and built-in Codespace Terminal); Incidents tab (New Issue / /bug dispatch, log triage, PR diffs); Integration tab (Overview & Live Gemini health probe, API Keys nrve_live_/nrve_test_, Workspace & GitHub SSH Keys, API & SDKs, Embedded Ask Nerve Shark assistant); Commands (/bug to report an issue, @shark to call you in a peer chat, /exit or :q or Close to leave a chat, /cancel shark to abort); Contact email: nervep2p@gmail.com.`,
+      `1. App Guide & Chatbox (mode="chat"): Help users easily understand and use Nerve in plain, approachable language—without unnecessary jargon. Know Nerve's exact UI and features: Top navbar (tapping the user Avatar when signed in opens a full-viewport left-aligned plain navigation drawer with only the code icon beside the user's avatar, imported name if any, and email at the top header, bold-only active tab text, plain New Issue and Sign In, and plain red Log out; when signed out, the drawer header displays only Nerve and opens without Profile); Sign-in Identity Rule (Nerve never auto-suggests or pre-fills a name or username when a user signs in—the only allowed auto-population rule is importing profile info from a same-email GitHub, Bitbucket, GitLab, Codeberg, or Gitea account); Warnings & Notifications (all warnings and user-action popup notifications automatically disappear after 6 seconds and include a plain X cancel icon without hover styling); Workspace left sidebar (Search repos/peers, Nerve Shark chatbox, Direct Messages with E2EE AES-GCM-256, Tracked Repositories, Focus Mode toggle, Code & Terminal panel); Right panel (Code Viewer with deep links like owner/repo#main/file.ts:L42 and built-in Codespace Terminal); Incidents tab (New Issue / /bug dispatch, STOP to discard investigating tickets without saving a record—auto-deactivated once investigation completes, Cancel to exit while keeping records, View All recorded entries tab, per-entry log deletion, log triage, PR diffs); Public Profile (inline width-matched push-down platform dropdown for Bitbucket, GitLab, Codeberg, Gitea, and GitHub alongside @username fetch, strictly verified by matching signed-in email, plus silent automatic GitHub account detection by email); Integration tab (v1.8.0 Overview & Live Gemini health probe, API Keys nrve_live_/nrve_test_, Workspace & GitHub SSH Keys, API & SDKs including /api/v1/profile/verify-sync, /api/v1/incidents/workflow-control, and /api/v1/ui/navigation-menu, Embedded Ask Nerve Shark assistant); Commands (/bug to report an issue, @shark to call you in a peer chat, /exit or :q or Close to leave a chat, /cancel shark to abort); Contact email: nervep2p@gmail.com.`,
       `2. Coding & Debugging Copilot (mode="code"): When the user asks to review, debug, fix, refactor, or write code (or references a bug/file/snippet), provide a clear explanation plus a concrete suggestedPatch, recommendedTerminalCommand, and conventional commit prTitle.`,
       `CRITICAL: If the user is asking a general question, greeting you, or asking how to use Nerve or Integration (NOT requesting a code patch), you MUST set mode="chat" and leave suggestedPatch, recommendedTerminalCommand, and prTitle as empty strings "".`,
       `Active surface: ${surface}. ${repo ? `Open repo: ${repo}#${branch}${filePath ? `/${filePath}` : ''}.` : 'No repository currently open.'}`,
@@ -3878,14 +5168,42 @@ app.post('/api/v1/offline/flush', authenticateApiKey, (req, res) => {
 // Static Client Serving & Server Initialization
 // ----------------------------------------------------------------------------
 async function startServer() {
+  let viteServer: { middlewares: any; close: () => Promise<void> } | null = null;
+
   if (process.env.NODE_ENV !== 'production') {
+    const disableHmr = process.env.DISABLE_HMR === 'true';
     const vitePkg: string = 'vite';
-    const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
+    const viteReadyPromise = import(/* @vite-ignore */ vitePkg)
+      .then(({ createServer: createViteServer }) =>
+        createViteServer({
+          server: {
+            middlewareMode: true,
+            hmr: disableHmr ? false : { server: httpServer },
+            ws: !disableHmr,
+            watch: disableHmr ? null : undefined,
+          },
+          appType: 'spa',
+        })
+      )
+      .then((vite) => {
+        viteServer = vite;
+        return vite;
+      });
+
+    // Bridge middleware: allows port 3000 to bind immediately while Vite finishes warming up
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      if (viteServer) {
+        return viteServer.middlewares(req, res, next);
+      }
+      viteReadyPromise
+        .then((vite) => vite.middlewares(req, res, next))
+        .catch((err) => next(err));
     });
-    app.use(vite.middlewares);
+
+    // Log any async Vite startup error explicitly so it never fails silently
+    viteReadyPromise.catch((err) => {
+      console.error('Vite middleware initialization failed:', err);
+    });
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));
@@ -3894,14 +5212,36 @@ async function startServer() {
     });
   }
 
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    console.error(`HTTP server error on port ${PORT}:`, err);
+    process.exit(1);
+  });
+
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Nerve Engine & WebRTC Signaling Server listening on http://0.0.0.0:${PORT}`);
   });
+
+  const gracefulShutdown = () => {
+    if (io) {
+      io.close();
+    }
+    if (viteServer) {
+      viteServer.close().catch(() => {});
+    }
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2000).unref();
+  };
+
+  process.once('SIGTERM', gracefulShutdown);
+  process.once('SIGINT', gracefulShutdown);
 }
 
 export { app, httpServer };
 export default app;
 
 if (!isVercelRuntime) {
-  startServer();
+  startServer().catch((err) => {
+    console.error('Fatal server startup error:', err);
+    process.exit(1);
+  });
 }

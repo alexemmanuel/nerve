@@ -55,6 +55,12 @@ export const ConnectedEmailUsersModal: React.FC<ConnectedEmailUsersModalProps> =
     }
   }, [isOpen, loadConnectedUsers]);
 
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => setError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [error]);
+
   if (!isOpen || typeof document === 'undefined') {
     return null;
   }
@@ -126,8 +132,16 @@ export const ConnectedEmailUsersModal: React.FC<ConnectedEmailUsersModalProps> =
         {/* Body */}
         <div className="p-4 space-y-3 max-h-[65vh] overflow-y-auto">
           {error && (
-            <div className="p-2.5 rounded-xl border border-red-500/30 bg-red-500/10 text-xs text-red-600 dark:text-red-400">
-              {error}
+            <div className="p-2.5 rounded-xl border border-red-500/30 bg-red-500/10 text-xs text-red-600 dark:text-red-400 flex items-start justify-between gap-2">
+              <span>{error}</span>
+              <button
+                type="button"
+                onClick={() => setError('')}
+                aria-label="Dismiss warning"
+                className="p-0.5 shrink-0 text-current cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
 

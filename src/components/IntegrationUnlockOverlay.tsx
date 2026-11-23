@@ -28,6 +28,8 @@ interface IntegrationUnlockOverlayProps {
   onChangeGateCodeInput: (value: string) => void;
   gateError: string;
   gateDispatchMessage: string;
+  onDismissGateError?: () => void;
+  onDismissGateDispatchMessage?: () => void;
   isVerifyingGate: boolean;
   showGmailSendConfirmModal: boolean;
   onOpenGmailSendConfirmModal: () => void;
@@ -55,6 +57,8 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
   onChangeGateCodeInput,
   gateError,
   gateDispatchMessage,
+  onDismissGateError,
+  onDismissGateDispatchMessage,
   isVerifyingGate,
   showGmailSendConfirmModal,
   onOpenGmailSendConfirmModal,
@@ -218,8 +222,18 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                   </div>
 
                   {gateError && (
-                    <div className="p-2.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs">
-                      {gateError}
+                    <div className="p-2.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs flex items-start justify-between gap-2">
+                      <span>{gateError}</span>
+                      {onDismissGateError && (
+                        <button
+                          type="button"
+                          onClick={onDismissGateError}
+                          aria-label="Dismiss warning"
+                          className="p-0.5 shrink-0 text-current cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -282,10 +296,21 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                 </form>
               ) : (
                 <form onSubmit={onVerifyCodeAccess} className="space-y-3 text-xs">
-                  <div className="p-3 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-mono text-[11px]">
-                    {gateDispatchMessage ||
-                      `A 6-digit verification code has been sent to ${gateEmailInput}. Check your inbox and enter the code below.`}
-                  </div>
+                  {gateDispatchMessage && (
+                    <div className="p-3 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-mono text-[11px] flex items-start justify-between gap-2">
+                      <span>{gateDispatchMessage}</span>
+                      {onDismissGateDispatchMessage && (
+                        <button
+                          type="button"
+                          onClick={onDismissGateDispatchMessage}
+                          aria-label="Dismiss notification"
+                          className="p-0.5 shrink-0 text-current cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   <div className="space-y-1">
                     <label className="font-semibold text-[#1f2328] dark:text-[#e6edf3] block">
@@ -303,8 +328,18 @@ export const IntegrationUnlockOverlay: React.FC<IntegrationUnlockOverlayProps> =
                   </div>
 
                   {gateError && (
-                    <div className="p-2.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs">
-                      {gateError}
+                    <div className="p-2.5 rounded-md bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-xs flex items-start justify-between gap-2">
+                      <span>{gateError}</span>
+                      {onDismissGateError && (
+                        <button
+                          type="button"
+                          onClick={onDismissGateError}
+                          aria-label="Dismiss warning"
+                          className="p-0.5 shrink-0 text-current cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   )}
 

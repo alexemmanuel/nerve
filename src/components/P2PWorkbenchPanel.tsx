@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Shield,
   Lock,
@@ -20,6 +20,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  X,
 } from 'lucide-react';
 import {
   SignalingTransportMode,
@@ -95,6 +96,11 @@ export const P2PWorkbenchPanel: React.FC<P2PWorkbenchPanelProps> = ({
     '{\n  "service": "edge-router",\n  "encryption": "AES-GCM-256",\n  "pbkdf2Iterations": 100000,\n  "chunkSize": 16384\n}'
   );
   const [jsonError, setJsonError] = useState<string>('');
+  useEffect(() => {
+    if (!jsonError) return;
+    const timer = setTimeout(() => setJsonError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [jsonError]);
   const [copiedFingerprint, setCopiedFingerprint] = useState<boolean>(false);
   const [expandedJsonIds, setExpandedJsonIds] = useState<Record<string, boolean>>({});
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -523,7 +529,17 @@ export const P2PWorkbenchPanel: React.FC<P2PWorkbenchPanelProps> = ({
               className="w-full p-2 text-xs font-mono rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none"
             />
             {jsonError && (
-              <div className="text-xs text-red-600 dark:text-red-400 font-mono">{jsonError}</div>
+              <div className="text-xs text-red-600 dark:text-red-400 font-mono flex items-start justify-between gap-2">
+                <span>{jsonError}</span>
+                <button
+                  type="button"
+                  onClick={() => setJsonError('')}
+                  aria-label="Dismiss warning"
+                  className="p-0.5 shrink-0 text-current cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             )}
           </form>
 

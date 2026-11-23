@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import * as d3 from 'd3';
 import {
   Key,
@@ -24,7 +25,9 @@ import {
   Mail,
   Globe,
   ShieldCheck,
-  Sparkles,
+  PenLine,
+  Edit3,
+  FileText,
   Send,
   Search,
   ChevronDown,
@@ -33,6 +36,7 @@ import {
 import { ENGINE_SDK_SPECS, RepositoryContext } from '../data/mockWorkspaceData';
 import { IncidentWorkflowReport } from '../data/incidentReports';
 import { IntegrationUnlockOverlay } from './IntegrationUnlockOverlay';
+import { EditableCodeBlock, MessageContentWithEditableCode } from './EditableCodeBlock';
 import { maskSecretKey, isKeySealed, sealKeyAfterUse } from '../utils/securityEncoding';
 import {
   auth,
@@ -474,6 +478,35 @@ const LIVE_ENDPOINTS: Array<{
       contactEmail: NERVE_PROFILE_EMAIL,
     },
   },
+  {
+    id: 'profile_verify_sync',
+    label: '29. Profile Sync (Email)',
+    path: '/api/v1/profile/verify-sync',
+    defaultBody: {
+      platform: 'bitbucket',
+      username: 'username',
+      signedInEmail: NERVE_PROFILE_EMAIL,
+    },
+  },
+  {
+    id: 'incident_workflow_control',
+    label: '30. Incident STOP / Log',
+    path: '/api/v1/incidents/workflow-control',
+    defaultBody: {
+      action: 'stop_discard',
+      ticketId: 'INC-709',
+      status: 'Investigating',
+    },
+  },
+  {
+    id: 'ui_navigation_menu',
+    label: '31. Full-View Plain Drawer',
+    path: '/api/v1/ui/navigation-menu',
+    defaultBody: {
+      isAuthenticated: true,
+      email: NERVE_PROFILE_EMAIL,
+    },
+  },
 ];
 
 // Safe ISO timestamp formatter preventing RangeError: Invalid time value crashes
@@ -555,6 +588,19 @@ export const Integration: React.FC<IntegrationProps> = ({
   const [isVerifyingGate, setIsVerifyingGate] = useState<boolean>(false);
   const [showGmailSendConfirmModal, setShowGmailSendConfirmModal] = useState<boolean>(false);
 
+  // Auto-dismiss gate warnings & notices after 6 seconds
+  useEffect(() => {
+    if (!gateError) return;
+    const timer = setTimeout(() => setGateError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [gateError]);
+
+  useEffect(() => {
+    if (!gateDispatchMessage) return;
+    const timer = setTimeout(() => setGateDispatchMessage(''), 6000);
+    return () => clearTimeout(timer);
+  }, [gateDispatchMessage]);
+
   // Auto-lock and auto-sign out when user switches browser tabs/windows while unlocked
   useEffect(() => {
     if (!integrationVerifiedEmail) return;
@@ -597,16 +643,121 @@ export const Integration: React.FC<IntegrationProps> = ({
     role: 'user' | 'assistant';
     text: string;
     timestamp: string;
+    edited?: boolean;
     suggestedPatch?: string;
     suggestedFollowUps?: string[];
   }
+  interface IntegrationSharkDraft {
+    id: string;
+    savedAt: string;
+    unsentText: string;
+    messages: IntegrationSharkMessage[];
+    preview: string;
+  }
+  const [integrationSharkDrafts, setIntegrationSharkDrafts] = useState<IntegrationSharkDraft[]>(
+    () => {
+      try {
+        const saved = localStorage.getItem('nerve_integration_shark_drafts_v1');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) return parsed;
+        }
+      } catch {
+        // Ignore storage error
+      }
+      return [];
+    }
+  );
+  const [showIntegrationDraftsMenu, setShowIntegrationDraftsMenu] = useState<boolean>(false);
+  const [editingIntegrationMsgId, setEditingIntegrationMsgId] = useState<string | null>(null);
+  const [editingIntegrationMsgText, setEditingIntegrationMsgText] = useState<string>('');
   const [integrationSharkMessages, setIntegrationSharkMessages] = useState<
     IntegrationSharkMessage[]
-  >([]);
+  >(() => {
+    try {
+      const archived = localStorage.getItem('nerve_integration_shark_archived_v1') === '1';
+      if (archived) {
+        return [];
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return [];
+  });
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('nerve_integration_shark_archived_v1') === '1') {
+        localStorage.removeItem('nerve_integration_shark_archived_v1');
+      }
+    } catch {
+      // Ignore storage error
+    }
+  }, []);
   const [integrationSharkInput, setIntegrationSharkInput] = useState<string>('');
   const [isIntegrationSharkThinking, setIsIntegrationSharkThinking] = useState<boolean>(false);
   const integrationSharkAbortRef = useRef<AbortController | null>(null);
   const integrationSharkReqIdRef = useRef<number>(0);
+  const integrationSharkMsgsRef = useRef<IntegrationSharkMessage[]>(integrationSharkMessages);
+  const integrationSharkInputRef = useRef<string>(integrationSharkInput);
+  const integrationTabArchivedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    integrationSharkMsgsRef.current = integrationSharkMessages;
+  }, [integrationSharkMessages]);
+
+  useEffect(() => {
+    integrationSharkInputRef.current = integrationSharkInput;
+  }, [integrationSharkInput]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'nerve_integration_shark_drafts_v1',
+        JSON.stringify(integrationSharkDrafts)
+      );
+    } catch {
+      // Ignore storage error
+    }
+  }, [integrationSharkDrafts]);
+
+  useEffect(() => {
+    const archiveIntegrationSharkOnClose = () => {
+      if (integrationTabArchivedRef.current) return;
+      const msgs = integrationSharkMsgsRef.current;
+      const unsent = integrationSharkInputRef.current.trim();
+      if (msgs.length === 0 && !unsent) return;
+
+      integrationTabArchivedRef.current = true;
+      const lastMsg = msgs[msgs.length - 1];
+      const draft: IntegrationSharkDraft = {
+        id: `int-draft-${Date.now()}`,
+        savedAt: new Date().toLocaleTimeString(),
+        unsentText: unsent,
+        messages: msgs,
+        preview: unsent
+          ? `Draft: ${unsent}`
+          : lastMsg?.text
+          ? lastMsg.text.slice(0, 90)
+          : `${msgs.length} message(s)`,
+      };
+      try {
+        const existingRaw = localStorage.getItem('nerve_integration_shark_drafts_v1');
+        const existing: IntegrationSharkDraft[] = existingRaw ? JSON.parse(existingRaw) : [];
+        const merged = [draft, ...(Array.isArray(existing) ? existing : [])].slice(0, 20);
+        localStorage.setItem('nerve_integration_shark_drafts_v1', JSON.stringify(merged));
+        localStorage.setItem('nerve_integration_shark_archived_v1', '1');
+      } catch {
+        // Ignore storage error on unload
+      }
+    };
+
+    window.addEventListener('pagehide', archiveIntegrationSharkOnClose);
+    window.addEventListener('beforeunload', archiveIntegrationSharkOnClose);
+    return () => {
+      window.removeEventListener('pagehide', archiveIntegrationSharkOnClose);
+      window.removeEventListener('beforeunload', archiveIntegrationSharkOnClose);
+    };
+  }, []);
 
   // Third-Party Engine Callout Gateway State
   const [selectedEngineModule, setSelectedEngineModule] = useState<string>('nerve_shark');
@@ -630,7 +781,7 @@ export const Integration: React.FC<IntegrationProps> = ({
       error?: string;
     };
   }>({
-    engineVersion: '1.7.0',
+    engineVersion: '1.8.0',
     contactEmail: NERVE_PROFILE_EMAIL,
     runtime: 'vercel-serverless',
     geminiModel: 'gemini-4-hydrogen',
@@ -651,7 +802,7 @@ export const Integration: React.FC<IntegrationProps> = ({
       if (res.ok) {
         const data = await res.json();
         setProfileHealth({
-          engineVersion: data.engineVersion || '1.7.0',
+          engineVersion: data.engineVersion || '1.8.0',
           contactEmail: data.contactEmail || NERVE_PROFILE_EMAIL,
           runtime: data.runtime || 'vercel-serverless',
           geminiModel: data.geminiModel || 'gemini-4-hydrogen',
@@ -676,6 +827,42 @@ export const Integration: React.FC<IntegrationProps> = ({
     setIsIntegrationSharkThinking(false);
   };
 
+  const archiveAndClearIntegrationShark = () => {
+    handleCancelIntegrationShark();
+    const msgs = [...integrationSharkMsgsRef.current];
+    const unsent = integrationSharkInputRef.current.trim();
+    if (msgs.length > 0 || unsent) {
+      const lastMsg = msgs[msgs.length - 1];
+      const draft: IntegrationSharkDraft = {
+        id: `int-draft-${Date.now()}`,
+        savedAt: new Date().toLocaleTimeString(),
+        unsentText: unsent,
+        messages: msgs,
+        preview: unsent
+          ? `Draft: ${unsent}`
+          : lastMsg?.text
+          ? lastMsg.text.slice(0, 140)
+          : `${msgs.length} message(s)`,
+      };
+      setIntegrationSharkDrafts((prev) => {
+        const nextDrafts = [draft, ...prev].slice(0, 20);
+        try {
+          localStorage.setItem('nerve_integration_shark_drafts_v1', JSON.stringify(nextDrafts));
+        } catch {
+          // Ignore storage error
+        }
+        return nextDrafts;
+      });
+    }
+    integrationSharkMsgsRef.current = [];
+    integrationSharkInputRef.current = '';
+    setIntegrationSharkMessages([]);
+    setIntegrationSharkInput('');
+    setEditingIntegrationMsgId(null);
+    setEditingIntegrationMsgText('');
+    setShowIntegrationDraftsMenu(false);
+  };
+
   const handleSendIntegrationShark = async (
     e?: React.FormEvent,
     explicitPrompt?: string
@@ -685,12 +872,12 @@ export const Integration: React.FC<IntegrationProps> = ({
     if (!promptText) return;
 
     if (explicitPrompt === undefined) {
+      integrationSharkInputRef.current = '';
       setIntegrationSharkInput('');
     }
 
     if (['/exit', '/clear', '/close'].includes(promptText.toLowerCase())) {
-      handleCancelIntegrationShark();
-      setIntegrationSharkMessages([]);
+      archiveAndClearIntegrationShark();
       return;
     }
 
@@ -701,10 +888,11 @@ export const Integration: React.FC<IntegrationProps> = ({
       timestamp: new Date().toLocaleTimeString(),
     };
 
-    const nextHistory = [...integrationSharkMessages, userMsg]
+    const nextHistory = [...integrationSharkMsgsRef.current, userMsg]
       .slice(-10)
       .map((m) => ({ role: m.role, text: m.text }));
 
+    integrationSharkMsgsRef.current = [...integrationSharkMsgsRef.current, userMsg];
     setIntegrationSharkMessages((prev) => [...prev, userMsg]);
 
     integrationSharkReqIdRef.current += 1;
@@ -1007,7 +1195,7 @@ export const Integration: React.FC<IntegrationProps> = ({
       const emailUserSession = {
         uid: `email_user_${Date.now()}`,
         email: cleanEmail,
-        displayName: cleanEmail.split('@')[0],
+        displayName: '',
       };
       onUserAuthenticated?.(null, emailUserSession);
     } catch (err: any) {
@@ -1052,6 +1240,13 @@ export const Integration: React.FC<IntegrationProps> = ({
             query: 'stream',
             channelId: 'nerve-shark',
             isSharkThinking: true,
+            platform: 'bitbucket',
+            username: 'username',
+            signedInEmail: integrationVerifiedEmail || NERVE_PROFILE_EMAIL,
+            isAuthenticated: Boolean(currentUser || _emailSession || integrationVerifiedEmail),
+            ticketId: 'INC-709',
+            action: selectedEngineModule === 'incident_workflow_control' ? 'stop_discard' : 'execute',
+            status: 'Investigating',
             prompt: 'Analyze failure stack trace and return non-blocking patch',
           },
         }),
@@ -1099,7 +1294,6 @@ export const Integration: React.FC<IntegrationProps> = ({
   const userGithubHandle =
     (currentUser as any)?._tokenResponse?.screenName ||
     (currentUser as any)?.reloadUserInfo?.screenName ||
-    (currentUser?.displayName ? currentUser.displayName.toLowerCase().replace(/[^a-z0-9-]/g, '-') : '') ||
     '';
 
   const [showSshKeyModal, setShowSshKeyModal] = useState<boolean>(false);
@@ -1127,6 +1321,25 @@ export const Integration: React.FC<IntegrationProps> = ({
   const [isSubmittingGitHubKey, setIsSubmittingGitHubKey] = useState<boolean>(false);
   const [gitHubUsernameFilter, setGitHubUsernameFilter] = useState<string>(() => userGithubHandle);
   const [copiedGitHubKeyId, setCopiedGitHubKeyId] = useState<number | null>(null);
+
+  // Auto-dismiss SSH & GitHub key warnings/notices after 6 seconds
+  useEffect(() => {
+    if (!sshError) return;
+    const timer = setTimeout(() => setSshError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [sshError]);
+
+  useEffect(() => {
+    if (!gitHubKeyError) return;
+    const timer = setTimeout(() => setGitHubKeyError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [gitHubKeyError]);
+
+  useEffect(() => {
+    if (!gitHubKeySuccess) return;
+    const timer = setTimeout(() => setGitHubKeySuccess(''), 6000);
+    return () => clearTimeout(timer);
+  }, [gitHubKeySuccess]);
 
   useEffect(() => {
     try {
@@ -1952,6 +2165,8 @@ const data = await response.json();`;
         onChangeGateCodeInput={(val) => setGateCodeInput(val)}
         gateError={gateError}
         gateDispatchMessage={gateDispatchMessage}
+        onDismissGateError={() => setGateError('')}
+        onDismissGateDispatchMessage={() => setGateDispatchMessage('')}
         isVerifyingGate={isVerifyingGate}
         showGmailSendConfirmModal={showGmailSendConfirmModal}
         onOpenGmailSendConfirmModal={() => setShowGmailSendConfirmModal(true)}
@@ -2022,6 +2237,12 @@ const data = await response.json();`;
     'incidents.ai_log_triage',
     'incidents.line_numbered_log_triage',
     'incidents.d3_pipeline',
+    'incidents.stop_discard',
+    'incidents.workflow_cancel',
+    'incidents.log_delete',
+    'profile.email_verified_sync',
+    'profile.multi_platform_fetch',
+    'ui.avatar_account_menu',
     'webhooks.listen',
     'engine.third_party_callout',
     'integration.gmail_gate_autolock',
@@ -2053,7 +2274,7 @@ const data = await response.json();`;
     { id: 'keys', label: 'API Keys', icon: <Key className="w-3.5 h-3.5" /> },
     { id: 'ssh', label: 'SSH Keys', icon: <Shield className="w-3.5 h-3.5" /> },
     { id: 'api', label: 'API & SDKs', icon: <Code2 className="w-3.5 h-3.5" /> },
-    { id: 'shark', label: 'Ask Nerve Shark', icon: <Sparkles className="w-3.5 h-3.5" /> },
+    { id: 'shark', label: 'Ask Nerve Shark', icon: <PenLine className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" /> },
   ];
 
   return (
@@ -2135,7 +2356,12 @@ const data = await response.json();`;
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveIntegrationTab(tab.id)}
+              onClick={() => {
+                if (activeIntegrationTab === 'shark' && tab.id !== 'shark') {
+                  archiveAndClearIntegrationShark();
+                }
+                setActiveIntegrationTab(tab.id);
+              }}
               className={`px-3.5 py-2.5 text-xs sm:text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
                 isActive
                   ? 'border-blue-600 dark:border-blue-400 text-[#1f2328] dark:text-[#e6edf3] font-semibold'
@@ -2172,7 +2398,7 @@ const data = await response.json();`;
                   onClick={() => setActiveIntegrationTab('shark')}
                   className="px-3 py-1.5 rounded-md text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] bg-[#f6f8fa] dark:bg-[#21262d] border border-[#d0d7de] dark:border-[#30363d] hover:border-blue-500 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  <PenLine className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                   <span>Need help? Ask Shark</span>
                 </button>
                 <button
@@ -2857,26 +3083,28 @@ const data = await response.json();`;
             </div>
 
             {gitHubKeyError && (
-              <div className="p-2.5 rounded-md border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400 text-xs flex items-center justify-between gap-2">
+              <div className="p-2.5 rounded-md border border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400 text-xs flex items-start justify-between gap-2">
                 <span>{gitHubKeyError}</span>
                 <button
                   type="button"
                   onClick={() => setGitHubKeyError('')}
-                  className="p-0.5 cursor-pointer"
+                  aria-label="Dismiss warning"
+                  className="p-0.5 shrink-0 text-current cursor-pointer"
                 >
-                  <X className="w-3 h-3" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               </div>
             )}
             {gitHubKeySuccess && (
-              <div className="p-2.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-xs flex items-center justify-between gap-2">
+              <div className="p-2.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-xs flex items-start justify-between gap-2">
                 <span>{gitHubKeySuccess}</span>
                 <button
                   type="button"
                   onClick={() => setGitHubKeySuccess('')}
-                  className="p-0.5 cursor-pointer"
+                  aria-label="Dismiss notification"
+                  className="p-0.5 shrink-0 text-current cursor-pointer"
                 >
-                  <X className="w-3 h-3" />
+                  <X className="w-3.5 h-3.5" />
                 </button>
               </div>
             )}
@@ -3126,8 +3354,16 @@ const data = await response.json();`;
               </div>
 
               {sshError && (
-                <div className="text-xs font-medium text-red-600 dark:text-red-400">
-                  {sshError}
+                <div className="text-xs font-medium text-red-600 dark:text-red-400 flex items-start justify-between gap-2">
+                  <span>{sshError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSshError('')}
+                    aria-label="Dismiss warning"
+                    className="p-0.5 shrink-0 text-current cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               )}
 
@@ -3180,6 +3416,9 @@ const data = await response.json();`;
                   className="px-2.5 py-1.5 text-xs font-mono rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] cursor-pointer max-w-[260px]"
                 >
                   <option value="nerve_shark">nerve_shark (Dual-Mode Chatbox &amp; Code AI)</option>
+                  <option value="profile_sync">profile_sync (Multi-Platform Same-Email Sync)</option>
+                  <option value="incident_workflow_control">incident_workflow_control (STOP / Cancel / Delete Log)</option>
+                  <option value="navigation_menu">navigation_menu (Full-View Plain Left Drawer)</option>
                   <option value="health_probe">health_probe (Vercel Runtime &amp; Gemini Probe)</option>
                   <option value="p2p_channel_control">p2p_channel_control (Close / Cancel / /exit)</option>
                   <option value="p2p_message_search">p2p_message_search (In-Chat Search)</option>
@@ -3371,9 +3610,9 @@ const data = await response.json();`;
       ===================================================================== */}
       {activeIntegrationTab === 'shark' && (
         <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] flex flex-col min-h-[540px] overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex items-center justify-between gap-2">
+          <div className="relative px-4 py-3 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+              <PenLine className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
               <div className="min-w-0">
                 <h2 className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
                   Nerve Shark · Integration Assistant
@@ -3384,27 +3623,221 @@ const data = await response.json();`;
               </div>
             </div>
 
-            {integrationSharkMessages.length > 0 && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowIntegrationDraftsMenu((prev) => !prev)}
+                  className={`relative px-2.5 py-1 text-xs font-medium rounded-md border flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                    showIntegrationDraftsMenu
+                      ? 'border-blue-500 bg-blue-600 text-white'
+                      : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Drafts</span>
+                  {integrationSharkDrafts.length > 0 && (
+                    <span className="font-mono text-[11px] tabular-nums">
+                      ({integrationSharkDrafts.length})
+                    </span>
+                  )}
+                  {integrationSharkDrafts.length > 0 && (
+                    <span
+                      aria-label="Unattended drafts notification"
+                      className="absolute -top-1 -right-1 flex h-2.5 w-2.5"
+                    >
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-90" />
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.95)]" />
+                    </span>
+                  )}
+                </button>
+
+                {showIntegrationDraftsMenu &&
+                  typeof document !== 'undefined' &&
+                  createPortal(
+                    <div
+                      className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 backdrop-blur-[1px] p-4"
+                      onClick={() => setShowIntegrationDraftsMenu(false)}
+                    >
+                      <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Saved Integration Drafts"
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full max-w-lg max-h-[82vh] flex flex-col rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] shadow-2xl overflow-hidden"
+                      >
+                        <div className="px-4 py-3 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] flex items-center justify-between gap-2 shrink-0">
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                            <span className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                              Saved Drafts ({integrationSharkDrafts.length})
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2.5">
+                            {integrationSharkDrafts.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setIntegrationSharkDrafts([])}
+                                className="text-xs font-medium text-red-600 dark:text-red-400 hover:underline cursor-pointer"
+                              >
+                                Clear all
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setShowIntegrationDraftsMenu(false)}
+                              aria-label="Close drafts menu"
+                              className="p-1 rounded-md text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto divide-y divide-[#d0d7de] dark:divide-[#30363d]">
+                          {integrationSharkDrafts.length === 0 ? (
+                            <div className="p-8 text-center text-xs sm:text-sm text-[#656d76] dark:text-[#8b949e]">
+                              No saved drafts. Entries automatically move here when you close Ask Nerve Shark or leave the tab.
+                            </div>
+                          ) : (
+                            integrationSharkDrafts.map((draft) => (
+                              <div key={draft.id} className="p-4 space-y-2.5 text-xs">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-semibold text-sm text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5">
+                                    <PenLine className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                                    <span>Nerve Shark</span>
+                                    {draft.messages.length > 0 && (
+                                      <span className="text-[11px] font-mono font-normal text-[#656d76] dark:text-[#8b949e]">
+                                        · {draft.messages.length} entr
+                                        {draft.messages.length === 1 ? 'y' : 'ies'}
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span className="font-mono text-[11px] text-[#656d76] dark:text-[#8b949e]">
+                                    {draft.savedAt}
+                                  </span>
+                                </div>
+
+                                {draft.messages.length > 0 && (
+                                  <div className="space-y-1.5 max-h-44 overflow-y-auto rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] p-2.5">
+                                    {draft.messages.map((entry, idx) => (
+                                      <div
+                                        key={entry.id || `${draft.id}-m-${idx}`}
+                                        className="text-xs leading-relaxed text-[#1f2328] dark:text-[#e6edf3]"
+                                      >
+                                        <span className="font-semibold text-[#656d76] dark:text-[#8b949e] mr-1.5">
+                                          {entry.role === 'assistant' ? 'Nerve Shark:' : 'You:'}
+                                        </span>
+                                        <span className="whitespace-pre-wrap break-words">
+                                          {entry.text}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {draft.unsentText && (
+                                  <div className="rounded-md border border-blue-500/30 bg-blue-50/50 dark:bg-blue-950/30 px-2.5 py-2 text-xs text-[#1f2328] dark:text-[#e6edf3] whitespace-pre-wrap break-words">
+                                    <span className="font-semibold text-blue-600 dark:text-blue-400 mr-1.5">
+                                      Unsent draft:
+                                    </span>
+                                    {draft.unsentText}
+                                  </div>
+                                )}
+
+                                <div className="flex justify-end gap-2 pt-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setIntegrationSharkDrafts((prev) =>
+                                        prev.filter((d) => d.id !== draft.id)
+                                      )
+                                    }
+                                    className="px-2.5 py-1 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] text-[#656d76] hover:text-red-500 cursor-pointer"
+                                  >
+                                    Delete
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (draft.messages.length > 0) {
+                                        integrationSharkMsgsRef.current = [
+                                          ...integrationSharkMsgsRef.current,
+                                          ...draft.messages,
+                                        ];
+                                        setIntegrationSharkMessages((prev) => [
+                                          ...prev,
+                                          ...draft.messages,
+                                        ]);
+                                      }
+                                      if (draft.unsentText) {
+                                        integrationSharkInputRef.current = draft.unsentText;
+                                        setIntegrationSharkInput(draft.unsentText);
+                                      }
+                                      setIntegrationSharkDrafts((prev) =>
+                                        prev.filter((d) => d.id !== draft.id)
+                                      );
+                                      setShowIntegrationDraftsMenu(false);
+                                    }}
+                                    className="px-3 py-1 rounded-md text-xs font-semibold bg-blue-600 text-white hover:bg-blue-500 cursor-pointer"
+                                  >
+                                    Resume
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>,
+                    document.body
+                  )}
+              </div>
+
+              {integrationSharkMessages.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleCancelIntegrationShark();
+                    integrationSharkMsgsRef.current = [];
+                    setIntegrationSharkMessages([]);
+                    setEditingIntegrationMsgId(null);
+                    setEditingIntegrationMsgText('');
+                  }}
+                  title="Delete all entries and start fresh"
+                  className="px-2.5 py-1 text-xs font-medium text-[#656d76] dark:text-[#8b949e] hover:text-red-600 dark:hover:text-red-400 border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] rounded-md flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear All</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={() => {
-                  handleCancelIntegrationShark();
-                  setIntegrationSharkMessages([]);
+                  archiveAndClearIntegrationShark();
+                  setActiveIntegrationTab('overview');
                 }}
-                className="px-2.5 py-1 text-xs font-medium text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] rounded-md cursor-pointer whitespace-nowrap"
+                title="Close Ask Nerve Shark (moves entries to Drafts)"
+                aria-label="Close Ask Nerve Shark"
+                className="px-2.5 py-1 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] hover:text-red-600 dark:hover:text-red-400 border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] rounded-md flex items-center gap-1 cursor-pointer whitespace-nowrap"
               >
-                Clear Chat
+                <X className="w-3.5 h-3.5" />
+                <span>Close</span>
               </button>
-            )}
+            </div>
           </div>
 
           <div className="flex-1 p-4 sm:p-6 space-y-3.5 overflow-y-auto max-h-[460px]">
             {integrationSharkMessages.length === 0 ? (
               <div className="max-w-xl mx-auto py-8 space-y-5">
                 <div className="space-y-1.5">
-                  <h3 className="text-base font-bold text-[#1f2328] dark:text-[#e6edf3]">
-                    How can Nerve Shark help with your integration?
-                  </h3>
+                  <div className="flex items-center gap-2">
+                    <PenLine className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
+                    <h3 className="text-base font-bold text-[#1f2328] dark:text-[#e6edf3]">
+                      How can Nerve Shark help with your integration?
+                    </h3>
+                  </div>
                   <p className="text-xs sm:text-sm text-[#656d76] dark:text-[#8b949e] leading-relaxed">
                     Ask plain-English questions about Live/Test API keys, SSH keys, GitHub webhooks, third-party engine callouts, or request ready-to-paste integration code.
                   </p>
@@ -3438,24 +3871,113 @@ const data = await response.json();`;
                       : 'border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22]'
                   }`}
                 >
-                  <div className="flex items-center justify-between text-xs text-[#656d76] dark:text-[#8b949e]">
+                  <div className="flex items-center justify-between text-xs text-[#656d76] dark:text-[#8b949e] gap-2">
                     <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5">
                       {msg.role === 'assistant' && (
-                        <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                        <PenLine className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                       )}
                       <span>{msg.role === 'assistant' ? 'Nerve Shark' : 'You'}</span>
                     </span>
-                    <span className="font-mono text-[11px]">{msg.timestamp}</span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="font-mono text-[11px]">
+                        {msg.timestamp}
+                        {msg.edited ? ' · edited' : ''}
+                      </span>
+                      {msg.role === 'user' && (
+                        <button
+                          type="button"
+                          title="Edit question"
+                          aria-label="Edit question"
+                          onClick={() => {
+                            setEditingIntegrationMsgId(msg.id);
+                            setEditingIntegrationMsgText(msg.text);
+                          }}
+                          className="p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/10 text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  <p className="text-xs sm:text-sm text-[#1f2328] dark:text-[#e6edf3] leading-relaxed whitespace-pre-wrap">
-                    {msg.text}
-                  </p>
+                  {editingIntegrationMsgId === msg.id && msg.role === 'user' ? (
+                    <div className="space-y-2">
+                      <textarea
+                        rows={2}
+                        value={editingIntegrationMsgText}
+                        onChange={(e) => setEditingIntegrationMsgText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            setEditingIntegrationMsgId(null);
+                            setEditingIntegrationMsgText('');
+                          }
+                        }}
+                        className="w-full px-3 py-2 text-xs sm:text-sm rounded-md border border-blue-500 bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none"
+                        autoFocus
+                      />
+                      <div className="flex justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingIntegrationMsgId(null);
+                            setEditingIntegrationMsgText('');
+                          }}
+                          className="px-2.5 py-1 rounded-md text-xs border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!editingIntegrationMsgText.trim()}
+                          onClick={() => {
+                            const trimmed = editingIntegrationMsgText.trim();
+                            if (!trimmed) return;
+                            setIntegrationSharkMessages((prev) =>
+                              prev.map((item) =>
+                                item.id === msg.id
+                                  ? { ...item, text: trimmed, edited: true }
+                                  : item
+                              )
+                            );
+                            setEditingIntegrationMsgId(null);
+                            setEditingIntegrationMsgText('');
+                          }}
+                          className="px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white cursor-pointer"
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  ) : msg.role === 'assistant' ? (
+                    <MessageContentWithEditableCode
+                      text={msg.text}
+                      onUpdateText={(nextText) =>
+                        setIntegrationSharkMessages((prev) =>
+                          prev.map((item) =>
+                            item.id === msg.id ? { ...item, text: nextText } : item
+                          )
+                        )
+                      }
+                    />
+                  ) : (
+                    <p className="text-xs sm:text-sm text-[#1f2328] dark:text-[#e6edf3] leading-relaxed whitespace-pre-wrap">
+                      {msg.text}
+                    </p>
+                  )}
 
                   {msg.suggestedPatch && (
-                    <pre className="p-3 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-xs font-mono text-emerald-700 dark:text-emerald-400 overflow-x-auto leading-relaxed">
-                      {msg.suggestedPatch}
-                    </pre>
+                    <EditableCodeBlock
+                      code={msg.suggestedPatch}
+                      onSave={(nextCode) =>
+                        setIntegrationSharkMessages((prev) =>
+                          prev.map((item) =>
+                            item.id === msg.id
+                              ? { ...item, suggestedPatch: nextCode }
+                              : item
+                          )
+                        )
+                      }
+                    />
                   )}
 
                   {msg.role === 'assistant' &&

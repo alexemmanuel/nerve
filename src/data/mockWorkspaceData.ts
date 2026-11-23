@@ -32,6 +32,8 @@ export interface RepositoryContext {
   ciStatus: 'Passing' | 'Failing' | 'Running';
   latestCommit: string;
   openPrs: number;
+  stars?: number;
+  htmlUrl?: string;
   activeCodespaceId: string;
   description: string;
   files: Record<string, RepoFile>;
@@ -632,7 +634,7 @@ export async function closeOrExitChannel(
     id: 'health-gemini-probe-sdk',
     platformName: 'Runtime & Live Gemini Probe SDK',
     category: 'Vercel Serverless & Gemini AQ. Health Check',
-    targetUseCase: 'Verifies Vercel serverless runtime, v1.6.3 engine status, nervep2p@gmail.com integration profile, and live gemini-4-hydrogen AQ. API key connectivity',
+    targetUseCase: 'Verifies Vercel serverless runtime, v1.8.0 engine status, nervep2p@gmail.com integration profile, and live gemini-4-hydrogen AQ. API key connectivity',
     protocolEndpoint: 'GET /api/v1/health · GET /api/v1/health?probe=gemini · scopes: health.gemini_probe, runtime.vercel_serverless',
     language: 'TypeScript',
     architectureNotes: 'Zero-secret health verification safe for uptime monitors, custom domains, and post-deploy checks.',
@@ -642,9 +644,68 @@ export async function closeOrExitChannel(
     headers: { "X-Integrator-Email": "nervep2p@gmail.com" },
   });
   return await res.json();
-  // { ok: true, engineVersion: "1.6.3", contactEmail: "nervep2p@gmail.com",
+  // { ok: true, engineVersion: "1.8.0", contactEmail: "nervep2p@gmail.com",
   //   runtime: "vercel-serverless", geminiKeyConfigured: true, geminiKeyPrefix: "AQ.",
   //   geminiLiveProbe: { active: true, model: "gemini-4-hydrogen", status: "ACTIVE" } }
+}`,
+  },
+  {
+    id: 'multi-platform-profile-sync-sdk',
+    platformName: 'Profile Sync, Drawer & Incident SDK',
+    category: 'Same-Email Identity Guard, Full-View Plain Drawer & Incident STOP/Log API',
+    targetUseCase: 'Syncs developer profiles across Bitbucket, GitLab, Codeberg, Gitea, and GitHub via inline width-matched push-down platform selector & @username with strict email matching, resolves the full-viewport left-aligned plain drawer contract (top code-icon + user info when signed in, bold-only active tab, plain red Log out), and controls incident STOP/Cancel/Log deletion via Live or Test API keys',
+    protocolEndpoint: 'POST /api/v1/profile/verify-sync · POST /api/v1/ui/navigation-menu · POST /api/v1/incidents/workflow-control',
+    language: 'TypeScript',
+    architectureNotes: 'Vercel serverless compatible. Works identically with Live (nrve_live_*) and Test (nrve_test_*) API keys. Never auto-suggests names or usernames on sign-in—only imports verified same-email Git/Bitbucket/GitLab/Codeberg/Gitea profiles (rejects mismatched emails with HTTP 403), deactivates STOP once investigation finishes (HTTP 409), and returns the left-aligned plain drawer + 6-second auto-dismiss plain-X notification contract.',
+    codeSnippet: `export async function syncVerifiedProfileDrawerAndIncident(
+  apiKey: string, // nrve_live_... or nrve_test_...
+  options: {
+    platform: "github" | "bitbucket" | "gitlab" | "codeberg" | "gitea";
+    username: string;
+    signedInEmail: string;
+    isAuthenticated: boolean;
+    ticketId?: string;
+  }
+) {
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": \`Bearer \${apiKey}\`,
+  };
+
+  const [profileRes, menuRes, workflowRes] = await Promise.all([
+    fetch("https://your-domain.com/api/v1/profile/verify-sync", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        platform: options.platform,
+        username: options.username,
+        signedInEmail: options.signedInEmail,
+      }),
+    }),
+    fetch("https://your-domain.com/api/v1/ui/navigation-menu", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        isAuthenticated: options.isAuthenticated,
+        email: options.signedInEmail,
+      }),
+    }),
+    fetch("https://your-domain.com/api/v1/incidents/workflow-control", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        action: "stop_discard", // or "cancel" | "delete_entry" | "delete_activity_log"
+        ticketId: options.ticketId || "INC-709",
+        status: "Investigating",
+      }),
+    }),
+  ]);
+
+  return {
+    profileSync: await profileRes.json(),
+    navigationMenu: await menuRes.json(),
+    workflowControl: await workflowRes.json(),
+  };
 }`,
   },
 ];

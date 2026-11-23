@@ -276,6 +276,38 @@ const API_ENDPOINTS: EndpointSpec[] = [
       ],
     },
   },
+  {
+    id: 'profile_verify_sync',
+    label: '20. Same-Email Multi-Platform Profile Sync',
+    path: '/api/v1/profile/verify-sync',
+    summary: 'Strictly verifies matching signed-in email ownership before importing @username profile info from Bitbucket, GitLab, Codeberg, Gitea, or GitHub via inline width-matched platform selector (no automatic name or username suggestions on sign-in).',
+    defaultBody: {
+      platform: 'bitbucket',
+      username: 'username',
+      signedInEmail: 'nervep2p@gmail.com',
+    },
+  },
+  {
+    id: 'incident_workflow_control',
+    label: '21. Incident Workflow STOP / Cancel / Log Control',
+    path: '/api/v1/incidents/workflow-control',
+    summary: 'Discards investigating tickets without creating a record via STOP (auto-deactivated once investigation finishes), exits with Cancel keeping records, or deletes entries and activity logs.',
+    defaultBody: {
+      action: 'stop_discard',
+      ticketId: 'INC-709',
+      status: 'Investigating',
+    },
+  },
+  {
+    id: 'ui_navigation_menu',
+    label: '22. Full-Viewport Plain Navigation Drawer',
+    path: '/api/v1/ui/navigation-menu',
+    summary: 'Resolves the full-viewport left-aligned plain drawer & UI notification contract: code icon + user info at top when signed in, Nerve text alone when signed out, bold-only active tab text, plain red Log out, and 6-second auto-dismiss warnings/popups with plain X cancel.',
+    defaultBody: {
+      isAuthenticated: true,
+      email: 'nervep2p@gmail.com',
+    },
+  },
 ];
 
 interface ApiStudioViewProps {
@@ -423,7 +455,7 @@ export const ApiStudioView: React.FC<ApiStudioViewProps> = ({
         <div>
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300">
-              NERVE PROTOCOL ENGINE v1.5
+              NERVE PROTOCOL ENGINE v1.8
             </span>
             <span className="text-xs text-slate-500 font-mono">Universal Ecosystem Architecture</span>
           </div>

@@ -9,11 +9,14 @@ import {
   Webhook,
   Plus,
   GitPullRequest,
-  Code2,
-  Sparkles,
-  Cpu,
-  Bot,
+  PenLine,
   Zap,
+  X,
+  ArrowRight,
+  ArrowLeft,
+  Clock,
+  Square,
+  Trash2,
 } from 'lucide-react';
 import { IncidentWorkflowReport } from '../data/incidentReports';
 import { PullRequestDiffViewer } from './PullRequestDiffViewer';
@@ -22,6 +25,10 @@ interface IncidentWorkflowViewProps {
   reports: IncidentWorkflowReport[];
   selectedTicketId: string;
   onSelectTicket: (ticketId: string) => void;
+  onCancelWorkflow?: () => void;
+  onDiscardIncident?: (ticketId: string) => void;
+  onDeleteIncident?: (ticketId: string) => void;
+  onDeleteActivityLog?: (ticketId: string, logIndex: number) => void;
   onRunTestForIncident?: (ticketId: string) => Promise<void>;
   onDeployFixForIncident?: (ticketId: string) => Promise<void>;
   onTriggerWebhook?: (eventType: 'issues' | 'pull_request', ticketId?: string) => Promise<void>;
@@ -50,6 +57,10 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
   reports,
   selectedTicketId,
   onSelectTicket,
+  onCancelWorkflow,
+  onDiscardIncident,
+  onDeleteIncident,
+  onDeleteActivityLog,
   onRunTestForIncident,
   onDeployFixForIncident,
   onTriggerWebhook,
@@ -58,16 +69,26 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
   isDark = true,
 }) => {
   const [activeSubView, setActiveSubView] = useState<'overview' | 'pr_diff'>('overview');
+  const [showAllRecordedTab, setShowAllRecordedTab] = useState<boolean>(false);
   const [isRunningAction, setIsRunningAction] = useState<boolean>(false);
   const [selectedStepIndex, setSelectedStepIndex] = useState<number | null>(null);
   const [isAnalyzingAi, setIsAnalyzingAi] = useState<boolean>(false);
   const [aiTriageState, setAiTriageState] = useState<Record<string, AiTriageAnalysis>>({});
   const [selectedLogLineNumber, setSelectedLogLineNumber] = useState<number | null>(null);
+  const analysisAbortRef = useRef<AbortController | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  const activeReport =
-    reports.find((r) => r.ticketId === selectedTicketId) || reports[0];
+  useEffect(() => {
+    if (reports.length === 0 && showAllRecordedTab) {
+      setShowAllRecordedTab(false);
+    }
+  }, [reports.length, showAllRecordedTab]);
 
+  const activeReport = selectedTicketId
+    ? reports.find((r) => r.ticketId === selectedTicketId)
+    : undefined;
+
+  const isInvestigating = activeReport ? activeReport.status === 'Investigating' : false;
   const isMerged = activeReport ? activeReport.status.includes('Merged') : false;
   const isTesting = activeReport ? activeReport.status === 'Testing Fix' : false;
 
@@ -262,40 +283,252 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
     }
   };
 
+  const handleCancelCurrentWorkflow = () => {
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current.abort();
+      analysisAbortRef.current = null;
+    }
+    setIsAnalyzingAi(false);
+    setIsRunningAction(false);
+    setActiveSubView('overview');
+    setShowAllRecordedTab(false);
+    setSelectedStepIndex(null);
+    setSelectedLogLineNumber(null);
+    if (onCancelWorkflow) {
+      onCancelWorkflow();
+    } else {
+      onSelectTicket('');
+    }
+  };
+
+  const handleStopAndDiscardWorkflow = () => {
+    if (!activeReport || activeReport.status !== 'Investigating') return;
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current.abort();
+      analysisAbortRef.current = null;
+    }
+    const ticketToDiscard = activeReport.ticketId;
+    setIsAnalyzingAi(false);
+    setIsRunningAction(false);
+    setActiveSubView('overview');
+    setShowAllRecordedTab(false);
+    setSelectedStepIndex(null);
+    setSelectedLogLineNumber(null);
+    setAiTriageState((prev) => {
+      const next = { ...prev };
+      delete next[ticketToDiscard];
+      return next;
+    });
+    if (onDiscardIncident) {
+      onDiscardIncident(ticketToDiscard);
+    } else if (onCancelWorkflow) {
+      onCancelWorkflow();
+    } else {
+      onSelectTicket('');
+    }
+  };
+
   const handleRunAiTriageAnalysis = async () => {
     if (!activeReport) return;
+    if (analysisAbortRef.current) {
+      analysisAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
     setIsAnalyzingAi(true);
     try {
-      // Analyze failure stack trace and prepare a pre-review fix recommendation via Nerve Shark (gemini-4-hydrogen)
-      await new Promise((r) => setTimeout(r, 900));
+      const targetTicketId = activeReport.ticketId;
+      let summaryText = '';
+      let patchSnippet = '';
+      try {
+        const res = await fetch('/api/v1/ai/collaborate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            prompt: `Analyze incident ${activeReport.ticketId} (${activeReport.summary}) in ${activeReport.repo}#${activeReport.branch}/${activeReport.filePath}:L${activeReport.lineNumber}. Explain the root cause from the stack trace and suggest a concrete fix.`,
+            mode: 'code',
+            surface: 'incidents',
+            repo: activeReport.repo,
+            branch: activeReport.branch,
+            filePath: activeReport.filePath,
+            codeSnippet: activeReport.stackTrace,
+            incidentTicket: {
+              ticketId: activeReport.ticketId,
+              summary: activeReport.summary,
+              filePath: activeReport.filePath,
+              lineNumber: activeReport.lineNumber,
+            },
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          summaryText = String(data?.summary || '').trim();
+          patchSnippet = String(data?.suggestedPatch || '').trim();
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+      }
+
+      if (controller.signal.aborted) return;
+
+      const firstTraceLine =
+        activeReport.stackTrace
+          .split('\n')
+          .map((l) => l.trim())
+          .find(Boolean) || activeReport.summary;
+
       const analysis: AiTriageAnalysis = {
-        confidence: '98.4%',
-        errorSignature: `ERR_UNCAUGHT_STREAM_EXCEPTION (${activeReport.filePath}:${activeReport.lineNumber})`,
-        rootCauseAnalysis: `CI runner detected an unhandled exception in ${activeReport.architectureBreakdown.serviceLayer}. The stream socket dropped during chunked transmission without guarding the connection context.`,
+        confidence: summaryText ? 'Verified via Nerve Shark' : 'Log Summary',
+        errorSignature: `${firstTraceLine.slice(0, 72)} (${activeReport.filePath}:${activeReport.lineNumber})`,
+        rootCauseAnalysis:
+          summaryText ||
+          `Reported issue "${activeReport.summary}" at ${activeReport.repo}/${activeReport.filePath}:L${activeReport.lineNumber}. ${activeReport.architectureBreakdown.rootCause}.`,
         suggestedPatchSnippet:
+          patchSnippet ||
           activeReport.implementedFix.diff ||
-          `@@ -${activeReport.lineNumber},2 +${activeReport.lineNumber},4 @@\n+ if (!context || !context.active) return;\n+ try { await flushStreamBuffer(); } catch(e) { console.error(e); }\n`,
-        blastRadiusScore: 'Low (Isolated to active socket transport)',
+          `@@ -${activeReport.lineNumber},2 +${activeReport.lineNumber},4 @@\n+ // Validate inputs and guard ${activeReport.filePath}:L${activeReport.lineNumber}\n`,
+        blastRadiusScore: activeReport.architectureBreakdown.blastRadius || activeReport.filePath,
       };
       setAiTriageState((prev) => ({
         ...prev,
-        [activeReport.ticketId]: analysis,
+        [targetTicketId]: analysis,
       }));
     } finally {
+      if (analysisAbortRef.current === controller) {
+        analysisAbortRef.current = null;
+      }
       setIsAnalyzingAi(false);
     }
   };
 
   if (!activeReport) {
+    if (showAllRecordedTab && reports.length > 0) {
+      return (
+        <div className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d0d7de] dark:border-[#30363d] pb-3.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowAllRecordedTab(false)}
+                className="px-2.5 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#21262d] hover:bg-[#e6ebf1] dark:hover:bg-[#30363d] text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back</span>
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {onOpenBugModal && (
+                <button
+                  type="button"
+                  onClick={onOpenBugModal}
+                  className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>New Issue</span>
+                </button>
+              )}
+              {onBackToMessenger && (
+                <button
+                  type="button"
+                  onClick={onBackToMessenger}
+                  className="px-2.5 py-1.5 text-xs font-medium text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] rounded-md cursor-pointer transition-colors whitespace-nowrap"
+                >
+                  Workspace
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] overflow-hidden">
+            <div className="px-4 py-3 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                <Activity className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <span>All Recorded Incident Entries</span>
+              </div>
+            </div>
+            <div className="divide-y divide-[#d0d7de] dark:divide-[#30363d]">
+              {reports.map((report) => (
+                <div
+                  key={report.ticketId}
+                  className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#f6f8fa] dark:hover:bg-[#0d1117]/60 transition-colors"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                      <span className="font-bold text-red-600 dark:text-red-400">
+                        {report.ticketId}
+                      </span>
+                      <span className="text-[#656d76] dark:text-[#8b949e]" aria-hidden="true">·</span>
+                      <span className="text-[#1f2328] dark:text-[#e6edf3] truncate">
+                        {report.repo}/{report.filePath}:L{report.lineNumber}
+                      </span>
+                      <span className="text-[#656d76] dark:text-[#8b949e]" aria-hidden="true">·</span>
+                      <span
+                        className={`font-semibold ${
+                          report.status.includes('Merged')
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : 'text-amber-700 dark:text-amber-400'
+                        }`}
+                      >
+                        {report.status}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#1f2328] dark:text-[#e6edf3] font-medium">
+                      {report.summary}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#656d76] dark:text-[#8b949e] font-mono">
+                      <span className="inline-flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {report.timestamp}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAllRecordedTab(false);
+                        onSelectTicket(report.ticketId);
+                      }}
+                      className="px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                    >
+                      <span>Continue</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                    {onDeleteIncident && (
+                      <button
+                        type="button"
+                        onClick={() => onDeleteIncident(report.ticketId)}
+                        title={`Delete recorded entry ${report.ticketId}`}
+                        aria-label={`Delete recorded entry ${report.ticketId}`}
+                        className="p-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#656d76] dark:text-[#8b949e] hover:text-red-600 dark:hover:text-red-400 hover:border-red-500/40 bg-white dark:bg-[#0d1117] cursor-pointer transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const latestReport = reports[0];
+
     return (
-      <div className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-6 py-10 flex items-center justify-center">
-        <div className="w-full max-w-xl rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] p-8 text-center space-y-4">
+      <div className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+        <div className="rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] p-6 sm:p-8 text-center space-y-4">
           <div className="space-y-1.5">
             <h1 className="text-base font-bold text-[#1f2328] dark:text-[#e6edf3]">
-              No open incidents
+              {reports.length > 0 ? 'Incident Workflow Ready' : 'No open incidents'}
             </h1>
             <p className="text-xs text-[#656d76] dark:text-[#8b949e] leading-relaxed max-w-md mx-auto">
-              Create a new issue or trigger a GitHub issue webhook to track incidents, inspect logs, and review fixes.
+              {reports.length > 0
+                ? 'Start a new issue, trigger a GitHub issue webhook, or continue a recorded incident entry below.'
+                : 'Create a new issue or trigger a GitHub issue webhook to track incidents, inspect logs, and review fixes.'}
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
@@ -330,23 +563,97 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
             )}
           </div>
         </div>
+
+        {/* Recorded Incident Entries: only the latest entry stays visible here; View All opens all entries in a dedicated tab */}
+        {latestReport && (
+          <div className="rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] overflow-hidden">
+            <div className="px-4 py-3 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                <Activity className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <span>Recorded Incident Entries</span>
+              </div>
+              {reports.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllRecordedTab(true)}
+                  className="px-2.5 py-1 rounded-md text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 cursor-pointer transition-colors whitespace-nowrap"
+                >
+                  View All
+                </button>
+              )}
+            </div>
+            <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#f6f8fa] dark:hover:bg-[#0d1117]/60 transition-colors">
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                  <span className="font-bold text-red-600 dark:text-red-400">
+                    {latestReport.ticketId}
+                  </span>
+                  <span className="text-[#656d76] dark:text-[#8b949e]" aria-hidden="true">·</span>
+                  <span className="text-[#1f2328] dark:text-[#e6edf3] truncate">
+                    {latestReport.repo}/{latestReport.filePath}:L{latestReport.lineNumber}
+                  </span>
+                  <span className="text-[#656d76] dark:text-[#8b949e]" aria-hidden="true">·</span>
+                  <span
+                    className={`font-semibold ${
+                      latestReport.status.includes('Merged')
+                        ? 'text-emerald-700 dark:text-emerald-400'
+                        : 'text-amber-700 dark:text-amber-400'
+                    }`}
+                  >
+                    {latestReport.status}
+                  </span>
+                </div>
+                <p className="text-xs text-[#1f2328] dark:text-[#e6edf3] font-medium">
+                  {latestReport.summary}
+                </p>
+                <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#656d76] dark:text-[#8b949e] font-mono">
+                  <span className="inline-flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {latestReport.timestamp}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onSelectTicket(latestReport.ticketId)}
+                  className="px-3 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                >
+                  <span>Continue</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+                {onDeleteIncident && (
+                  <button
+                    type="button"
+                    onClick={() => onDeleteIncident(latestReport.ticketId)}
+                    title={`Delete recorded entry ${latestReport.ticketId}`}
+                    aria-label={`Delete recorded entry ${latestReport.ticketId}`}
+                    className="p-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#656d76] dark:text-[#8b949e] hover:text-red-600 dark:hover:text-red-400 hover:border-red-500/40 bg-white dark:bg-[#0d1117] cursor-pointer transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
   return (
     <div className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-5 space-y-5">
-      {/* Header, Sub-view Switcher & Webhook Actions */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-[#d0d7de] dark:border-[#30363d] pb-3.5">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1.5 text-xs font-mono">
-            <span className="font-bold text-[#1f2328] dark:text-[#e6edf3]">Incidents</span>
-            <span className="text-[#656d76] dark:text-[#8b949e]">/</span>
-            <span className="text-blue-600 dark:text-blue-400 font-semibold">
+      {/* Header, Sub-view Switcher & Workflow Actions */}
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 border-b border-[#d0d7de] dark:border-[#30363d] pb-3.5">
+        <div className="flex flex-wrap items-center gap-3 min-w-0">
+          <div className="flex items-center gap-1.5 text-xs font-mono min-w-0">
+            <span className="font-bold text-[#1f2328] dark:text-[#e6edf3] shrink-0">Incidents</span>
+            <span className="text-[#656d76] dark:text-[#8b949e] shrink-0">/</span>
+            <span className="text-blue-600 dark:text-blue-400 font-semibold truncate max-w-[200px]">
               {activeReport.repo}
             </span>
-            <span className="text-[#656d76] dark:text-[#8b949e]">/</span>
-            <span className="text-[#656d76] dark:text-[#8b949e]">{activeReport.ticketId}</span>
+            <span className="text-[#656d76] dark:text-[#8b949e] shrink-0">/</span>
+            <span className="text-[#656d76] dark:text-[#8b949e] shrink-0">{activeReport.ticketId}</span>
           </div>
 
           {/* Sub-view Navigation Tabs */}
@@ -409,6 +716,29 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
               </button>
             </>
           )}
+          <button
+            type="button"
+            onClick={handleStopAndDiscardWorkflow}
+            disabled={!isInvestigating}
+            title={
+              isInvestigating
+                ? 'Discard this investigating ticket and return to the incident list without creating a record'
+                : 'Investigation complete — STOP is disabled'
+            }
+            className="px-2.5 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/40 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-amber-500/10 rounded-md flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+          >
+            <Square className="w-3 h-3 fill-current" />
+            <span>STOP</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleCancelCurrentWorkflow}
+            title="Exit current workflow and return to the incident list while keeping all recorded entries"
+            className="px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 bg-red-500/5 hover:bg-red-500/15 border border-red-500/35 rounded-md flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap"
+          >
+            <X className="w-3.5 h-3.5" />
+            <span>Cancel</span>
+          </button>
           {onBackToMessenger && (
             <button
               type="button"
@@ -427,6 +757,9 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
           onDeployFix={onDeployFixForIncident}
           onRunTest={onRunTestForIncident}
           onBackToOverview={() => setActiveSubView('overview')}
+          onStopWorkflow={handleStopAndDiscardWorkflow}
+          canStopWorkflow={isInvestigating}
+          onCancelWorkflow={handleCancelCurrentWorkflow}
           isDark={isDark}
         />
       ) : (
@@ -471,9 +804,6 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
               <div className="flex items-center justify-between text-xs border-b border-[#d0d7de] dark:border-[#30363d] pb-2">
                 <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3]">
                   Open Queue
-                </span>
-                <span className="font-mono tabular-nums text-[#656d76] dark:text-[#8b949e]">
-                  {reports.length}
                 </span>
               </div>
 
@@ -582,34 +912,45 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
               {/* Nerve Shark Failure Log Analysis */}
               <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#d0d7de] dark:border-[#30363d] pb-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-md bg-blue-600/10 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-                      <Bot className="w-4 h-4" />
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-xs font-bold text-[#1f2328] dark:text-[#e6edf3]">
+                        Nerve Shark Log Analysis
+                      </h3>
+                      <span className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
+                        · gemini-4-hydrogen
+                      </span>
                     </div>
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-xs font-bold text-[#1f2328] dark:text-[#e6edf3]">
-                          Nerve Shark Log Analysis
-                        </h3>
-                        <span className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e]">
-                          · gemini-4-hydrogen
-                        </span>
-                      </div>
-                      <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
-                        Inspects CI failure logs and stack traces to suggest a fix before review.
-                      </p>
-                    </div>
+                    <p className="text-xs text-[#656d76] dark:text-[#8b949e]">
+                      Inspects CI failure logs and stack traces to suggest a fix before review.
+                    </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleRunAiTriageAnalysis}
-                    disabled={isAnalyzingAi}
-                    className="px-3.5 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shrink-0 whitespace-nowrap"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>{isAnalyzingAi ? 'Analyzing Logs...' : 'Analyze Failure Logs'}</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {isAnalyzingAi && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          analysisAbortRef.current?.abort();
+                          analysisAbortRef.current = null;
+                          setIsAnalyzingAi(false);
+                        }}
+                        className="px-2.5 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] text-[#656d76] dark:text-[#8b949e] hover:text-red-600 dark:hover:text-red-400 flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>Stop</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleRunAiTriageAnalysis}
+                      disabled={isAnalyzingAi}
+                      className="px-3.5 py-1.5 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shrink-0 whitespace-nowrap"
+                    >
+                      <PenLine className="w-3.5 h-3.5" />
+                      <span>{isAnalyzingAi ? 'Analyzing Logs...' : 'Analyze Failure Logs'}</span>
+                    </button>
+                  </div>
                 </div>
 
                 {currentAiAnalysis ? (
@@ -730,41 +1071,42 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
               </div>
 
               <div className="border border-[#d0d7de] dark:border-[#30363d] rounded-lg bg-white dark:bg-[#161b22] p-4 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#d0d7de] dark:border-[#30363d] pb-2.5">
                   <h3 className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5">
                     <Activity className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
                     <span>Activity Logs</span>
                   </h3>
-                  <span className="text-xs text-[#656d76] dark:text-[#8b949e] font-mono tabular-nums">
-                    {activeReport.systemLogsReport.length} entries
-                  </span>
                 </div>
 
-                <div className="divide-y divide-[#d0d7de] dark:divide-[#30363d] rounded-md border border-[#d0d7de] dark:border-[#30363d] overflow-hidden">
-                  {activeReport.systemLogsReport.map((log, index) => {
-                    const lineNumber = index + 1;
-                    const isSelected = selectedLogLineNumber === lineNumber;
-                    return (
-                      <div
-                        key={lineNumber}
-                        data-line-number={lineNumber}
-                        onClick={() =>
-                          setSelectedLogLineNumber((prev) =>
-                            prev === lineNumber ? null : lineNumber
-                          )
-                        }
-                        className={`p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs cursor-pointer transition-colors ${
-                          isSelected
-                            ? 'bg-blue-50/80 dark:bg-blue-950/30'
-                            : log.level === 'ERROR'
-                            ? 'bg-red-50/40 dark:bg-red-950/15 hover:bg-red-50/70 dark:hover:bg-red-950/25'
-                            : 'bg-white dark:bg-[#0d1117] hover:bg-[#f6f8fa] dark:hover:bg-[#161b22]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
+                {activeReport.systemLogsReport.length === 0 ? (
+                  <p className="py-3 text-xs text-[#656d76] dark:text-[#8b949e]">
+                    No activity logs recorded for this ticket.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-[#d0d7de] dark:divide-[#30363d] rounded-md border border-[#d0d7de] dark:border-[#30363d] overflow-hidden">
+                    {activeReport.systemLogsReport.map((log, index) => {
+                      const lineNumber = index + 1;
+                      const isSelected = selectedLogLineNumber === lineNumber;
+                      return (
+                        <div
+                          key={`${log.event}-${index}`}
+                          data-line-number={lineNumber}
+                          onClick={() =>
+                            setSelectedLogLineNumber((prev) =>
+                              prev === lineNumber ? null : lineNumber
+                            )
+                          }
+                          className={`px-3 py-2.5 flex items-start gap-3 text-xs cursor-pointer transition-colors ${
+                            isSelected
+                              ? 'bg-blue-50/80 dark:bg-blue-950/30'
+                              : log.level === 'ERROR'
+                              ? 'bg-red-50/40 dark:bg-red-950/15 hover:bg-red-50/70 dark:hover:bg-red-950/25'
+                              : 'bg-white dark:bg-[#0d1117] hover:bg-[#f6f8fa] dark:hover:bg-[#161b22]'
+                          }`}
+                        >
                           <span
                             title={`Log entry line ${lineNumber}`}
-                            className={`w-8 pr-2 text-right font-mono text-[11px] select-none tabular-nums shrink-0 border-r ${
+                            className={`w-7 pt-0.5 pr-2 text-right font-mono text-[11px] select-none tabular-nums shrink-0 border-r ${
                               isSelected
                                 ? 'text-blue-600 dark:text-blue-400 border-blue-400 font-bold'
                                 : log.level === 'ERROR'
@@ -774,31 +1116,59 @@ export const IncidentWorkflowView: React.FC<IncidentWorkflowViewProps> = ({
                           >
                             {lineNumber}
                           </span>
-                          <span
-                            className={`font-mono text-[11px] font-bold shrink-0 ${
-                              log.level === 'SUCCESS'
-                                ? 'text-emerald-700 dark:text-emerald-400'
-                                : log.level === 'ERROR'
-                                ? 'text-red-600 dark:text-red-400'
-                                : 'text-blue-600 dark:text-blue-400'
-                            }`}
-                          >
-                            {log.level}
-                          </span>
-                          <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3] font-mono shrink-0">
-                            {log.event}
-                          </span>
-                          <span className="text-[#656d76] dark:text-[#8b949e] truncate">
-                            {log.details}
-                          </span>
+
+                          <div className="flex-1 min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                                <span
+                                  className={`font-mono text-[11px] font-bold shrink-0 ${
+                                    log.level === 'SUCCESS'
+                                      ? 'text-emerald-700 dark:text-emerald-400'
+                                      : log.level === 'ERROR'
+                                      ? 'text-red-600 dark:text-red-400'
+                                      : log.level === 'WARN'
+                                      ? 'text-amber-700 dark:text-amber-400'
+                                      : 'text-blue-600 dark:text-blue-400'
+                                  }`}
+                                >
+                                  {log.level}
+                                </span>
+                                <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3] font-mono break-all">
+                                  {log.event}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-[#656d76] dark:text-[#8b949e] font-mono tabular-nums text-[11px]">
+                                  {log.time}
+                                </span>
+                                {onDeleteActivityLog && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (selectedLogLineNumber === lineNumber) {
+                                        setSelectedLogLineNumber(null);
+                                      }
+                                      onDeleteActivityLog(activeReport.ticketId, index);
+                                    }}
+                                    title="Delete this log entry"
+                                    aria-label={`Delete activity log line ${lineNumber}`}
+                                    className="p-1 rounded text-[#656d76] dark:text-[#8b949e] hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 cursor-pointer transition-colors"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            <p className="text-xs text-[#656d76] dark:text-[#8b949e] leading-relaxed break-words">
+                              {log.details}
+                            </p>
+                          </div>
                         </div>
-                        <span className="text-[#656d76] dark:text-[#8b949e] font-mono tabular-nums text-[11px] shrink-0 pl-10 sm:pl-0">
-                          {log.time}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           </div>

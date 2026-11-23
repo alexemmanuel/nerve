@@ -51,7 +51,14 @@ import {
   FileText,
   Users,
   MessageSquare,
-  Sparkles,
+  PenLine,
+  Bookmark,
+  History,
+  Play,
+  Copy,
+  ExternalLink,
+  Star,
+  User as UserIcon,
 } from 'lucide-react';
 import {
   DeveloperPeer,
@@ -68,6 +75,8 @@ import { IncidentWorkflowView } from './components/IncidentWorkflowView';
 import { Integration } from './components/Integration';
 import { LegalDocumentView } from './components/LegalDocumentView';
 import { ConnectedEmailUsersModal } from './components/ConnectedEmailUsersModal';
+import { UserProfileModal } from './components/UserProfileModal';
+import { EditableCodeBlock, MessageContentWithEditableCode } from './components/EditableCodeBlock';
 import { useP2PEngine, SignalingTransportMode } from './hooks/useP2PEngine';
 import {
   getOfflineQueue,
@@ -90,16 +99,22 @@ import { setEnvEncodedStorage, getEnvEncodedStorage } from './utils/securityEnco
 import {
   auth,
   githubProvider,
+  GithubAuthProvider,
   signInWithPopup,
   signInWithGoogleForGmail,
   getCachedGmailAccessToken,
   setCachedGmailAccessToken,
+  setCachedGitHubAccessToken,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   sendEmailVerification,
+  sendPasswordResetEmail,
   signOut,
   onAuthStateChanged,
   User,
+  NerveUserProfile,
+  fetchUserProfileFromFirestore,
+  saveUserProfileToFirestore,
   syncAuthenticatedUserAndPeers,
   addRealGitHubPeerToFirestore,
   updateGitHubPeerFollowInFirestore,
@@ -108,8 +123,9 @@ import {
 } from './firebase';
 
 type ActiveTab = 'workspace' | 'incidents' | 'integration' | 'privacy' | 'terms';
-type AuthModalMode = 'signin' | 'signup';
+type AuthModalMode = 'signin' | 'signup' | 'forgot';
 type SignUpStep = 'credentials' | 'verify_code';
+type ForgotPasswordStep = 'request' | 'verify_reset';
 
 const resolveTabFromLocation = (): ActiveTab => {
   if (typeof window === 'undefined') return 'workspace';
@@ -447,24 +463,53 @@ export default function App() {
     }
   });
 
-  // Auth Modal State (Sign In with Email/Password + Sign Up with Code/Text Activation + GitHub & Google Auto Sign-In)
+  // Auth Modal State (Sign In, Sign Up with Activation, Forgotten Password Reset, & OAuth)
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [authModalMode, setAuthModalMode] = useState<AuthModalMode>('signin');
   const [signUpStep, setSignUpStep] = useState<SignUpStep>('credentials');
+  const [forgotPasswordStep, setForgotPasswordStep] = useState<ForgotPasswordStep>('request');
   const [authEmail, setAuthEmail] = useState<string>('');
   const [authPassword, setAuthPassword] = useState<string>('');
   const [authDeliveryChannel, setAuthDeliveryChannel] = useState<'email' | 'sms'>('email');
   const [authPhone, setAuthPhone] = useState<string>('');
   const [activationCodeInput, setActivationCodeInput] = useState<string>('');
+  const [resetCodeInput, setResetCodeInput] = useState<string>('');
+  const [resetNewPassword, setResetNewPassword] = useState<string>('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState<string>('');
   const [dispatchedNotice, setDispatchedNotice] = useState<string>('');
+  const [authSuccessNotice, setAuthSuccessNotice] = useState<string>('');
   const [authError, setAuthError] = useState<string>('');
   const [isSubmittingAuth, setIsSubmittingAuth] = useState<boolean>(false);
+
+  // Auto-dismiss auth warnings & popup notices after 6 seconds
+  useEffect(() => {
+    if (!authError) return;
+    const timer = setTimeout(() => setAuthError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [authError]);
+
+  useEffect(() => {
+    if (!authSuccessNotice) return;
+    const timer = setTimeout(() => setAuthSuccessNotice(''), 6000);
+    return () => clearTimeout(timer);
+  }, [authSuccessNotice]);
+
+  useEffect(() => {
+    if (!dispatchedNotice) return;
+    const timer = setTimeout(() => setDispatchedNotice(''), 6000);
+    return () => clearTimeout(timer);
+  }, [dispatchedNotice]);
+
+  // User Profile Setup Modal & Persisted Profile State
+  const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
+  const [userProfile, setUserProfile] = useState<NerveUserProfile | null>(null);
 
   const [newPeerGithubHandle, setNewPeerGithubHandle] = useState<string>('');
   const [isAddingPeer, setIsAddingPeer] = useState<boolean>(false);
 
   // GitHub Search (Repositories & Peers) State
   const [githubSearchQuery, setGithubSearchQuery] = useState<string>('');
+  const [repoListFilterQuery, setRepoListFilterQuery] = useState<string>('');
   const [githubSearchType, setGithubSearchType] = useState<'all' | 'repositories' | 'users'>('all');
   const [isSearchingGitHub, setIsSearchingGitHub] = useState<boolean>(false);
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
@@ -486,6 +531,52 @@ export default function App() {
       publicRepos: number;
     }>;
   }>({ repositories: [], users: [] });
+
+  type GitHubSearchHistoryEntry = {
+    query: string;
+    type: 'all' | 'repositories' | 'users';
+    isDeveloperQuery: boolean;
+    matchedUserLogins: string[];
+    timestamp: string;
+  };
+
+  const GITHUB_SEARCH_HISTORY_STORAGE_KEY = 'nerve_github_search_history_v1';
+  const [githubSearchHistory, setGithubSearchHistory] = useState<GitHubSearchHistoryEntry[]>(() => {
+    try {
+      const raw = localStorage.getItem(GITHUB_SEARCH_HISTORY_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter(
+          (item: any) =>
+            item && typeof item.query === 'string' && item.query.trim().length > 0
+        )
+        .map((item: any) => ({
+          query: String(item.query).trim(),
+          type:
+            item.type === 'repositories' || item.type === 'users' || item.type === 'all'
+              ? item.type
+              : 'all',
+          isDeveloperQuery: Boolean(item.isDeveloperQuery),
+          matchedUserLogins: Array.isArray(item.matchedUserLogins)
+            ? item.matchedUserLogins.map((u: any) => String(u).toLowerCase())
+            : [],
+          timestamp: typeof item.timestamp === 'string' ? item.timestamp : new Date().toISOString(),
+        }))
+        .slice(0, 10);
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(GITHUB_SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(githubSearchHistory));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [githubSearchHistory]);
 
   // Workspace Dashboard Section State
   const [showWorkspaceDashboard, setShowWorkspaceDashboard] = useState<boolean>(true);
@@ -510,7 +601,7 @@ export default function App() {
   );
   const prevCiStatusMapRef = useRef<Record<string, 'Passing' | 'Failing' | 'Running'>>({});
 
-  // Passive Network Observer State (Automatically observes user's live network data)
+  // Passive Network Observer State (Automatically observes live network phases)
   const [isOffline, setIsOffline] = useState<boolean>(
     typeof navigator !== 'undefined' ? !navigator.onLine : false
   );
@@ -521,16 +612,78 @@ export default function App() {
   const [networkLatency, setNetworkLatency] = useState<number | null>(null);
   const [networkSignalQuality, setNetworkSignalQuality] = useState<
     'strong' | 'moderate' | 'slow' | 'offline'
-  >('strong');
+  >(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'strong');
+  const [networkPhase, setNetworkPhase] = useState<
+    'online' | 'slow' | 'reconnecting' | 'offline'
+  >(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'online');
+  const probeLiveNetworkRef = useRef<(() => Promise<void>) | null>(null);
+  const consecutiveNetFailuresRef = useRef<number>(0);
+
+  // Active file path copy feedback & per-repo local star toggle + live GitHub metadata cache
+  const [copiedFilePathFeedback, setCopiedFilePathFeedback] = useState<boolean>(false);
+  const copiedFilePathTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [starredRepos, setStarredRepos] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('nerve_starred_repos_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return {};
+  });
+  const repoStarsLastFetchedRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nerve_starred_repos_v1', JSON.stringify(starredRepos));
+    } catch {
+      // Ignore storage error
+    }
+  }, [starredRepos]);
+
+  interface ChatDraftItem {
+    id: string;
+    channelKey: string;
+    channelLabel: string;
+    isShark: boolean;
+    savedAt: string;
+    unsentText: string;
+    messages: ChatMessage[];
+    preview: string;
+  }
 
   // Real GitHub Peers & Repositories (Initialized as clean empty collections for real users)
   const [peers, setPeers] = useState<DeveloperPeer[]>([]);
   const [selectedPeerHandle, setSelectedPeerHandle] = useState<string>('');
   const [globalFocusSwitch, setGlobalFocusSwitch] = useState<boolean>(false);
 
-  // Messages & Repositories (Persisted to localStorage so chat history & reactions survive refreshes)
+  // Saved Chat Drafts (automatically populated when closing a tab or chatbox with active entries)
+  const [chatDrafts, setChatDrafts] = useState<ChatDraftItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('nerve_chat_drafts_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // Ignore storage error
+    }
+    return [];
+  });
+  const [showDraftsMenu, setShowDraftsMenu] = useState<boolean>(false);
+  const [confirmClearChatAll, setConfirmClearChatAll] = useState<boolean>(false);
+
+  // Messages & Repositories (If previous tab closed with entries, those were pushed to Drafts & chat resumes clean)
   const [messagesByPeer, setMessagesByPeer] = useState<Record<string, ChatMessage[]>>(() => {
     try {
+      const wasArchivedOnTabClose = localStorage.getItem('nerve_tab_closed_archive_v1') === '1';
+      if (wasArchivedOnTabClose) {
+        localStorage.setItem('nerve_p2p_messages_by_peer_v1', '{}');
+        return {};
+      }
       const saved = localStorage.getItem('nerve_p2p_messages_by_peer_v1');
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -544,11 +697,124 @@ export default function App() {
 
   useEffect(() => {
     try {
+      if (localStorage.getItem('nerve_tab_closed_archive_v1') === '1') {
+        localStorage.removeItem('nerve_tab_closed_archive_v1');
+      }
+    } catch {
+      // Ignore storage error
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
       localStorage.setItem('nerve_p2p_messages_by_peer_v1', JSON.stringify(messagesByPeer));
     } catch {
       // Ignore storage quota error
     }
   }, [messagesByPeer]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('nerve_chat_drafts_v1', JSON.stringify(chatDrafts));
+    } catch {
+      // Ignore storage quota error
+    }
+  }, [chatDrafts]);
+
+  const messagesByPeerRef = useRef<Record<string, ChatMessage[]>>(messagesByPeer);
+  const composerTextRef = useRef<string>('');
+  const selectedPeerHandleRef = useRef<string>(selectedPeerHandle);
+  const peersRef = useRef<DeveloperPeer[]>(peers);
+  const tabArchivedAlreadyRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    messagesByPeerRef.current = messagesByPeer;
+  }, [messagesByPeer]);
+
+  useEffect(() => {
+    selectedPeerHandleRef.current = selectedPeerHandle;
+    setConfirmClearChatAll(false);
+  }, [selectedPeerHandle]);
+
+  useEffect(() => {
+    peersRef.current = peers;
+  }, [peers]);
+
+  // Auto-push active chatbox/message entries & unsent text to Drafts when user closes the browser tab completely
+  useEffect(() => {
+    const archiveTabEntriesToDrafts = () => {
+      if (tabArchivedAlreadyRef.current) return;
+
+      const currentMap = messagesByPeerRef.current || {};
+      const activeHandle = selectedPeerHandleRef.current || '';
+      const unsent = composerTextRef.current.trim();
+      const channelKeys = new Set<string>(
+        Object.keys(currentMap).filter((k) => Array.isArray(currentMap[k]) && currentMap[k].length > 0)
+      );
+      if (unsent) {
+        channelKeys.add(activeHandle || 'nerve-shark');
+      }
+
+      if (channelKeys.size === 0) return;
+
+      tabArchivedAlreadyRef.current = true;
+      const savedAt = new Date().toLocaleTimeString();
+      const newDrafts: ChatDraftItem[] = [];
+
+      channelKeys.forEach((chKey) => {
+        const msgs = currentMap[chKey] || [];
+        const chUnsent = chKey === (activeHandle || 'nerve-shark') ? unsent : '';
+        if (msgs.length === 0 && !chUnsent) return;
+
+        const isShark = chKey === 'nerve-shark';
+        const peerObj = peersRef.current.find((p) => p.handle === chKey);
+        const channelLabel = isShark ? 'Nerve Shark' : peerObj ? `@${peerObj.handle}` : `@${chKey}`;
+        const lastMsg = msgs[msgs.length - 1];
+        const preview = chUnsent
+          ? `Draft: ${chUnsent}`
+          : lastMsg?.text
+          ? lastMsg.text.slice(0, 90)
+          : `${msgs.length} message(s)`;
+
+        newDrafts.push({
+          id: `draft-${Date.now()}-${chKey}`,
+          channelKey: chKey,
+          channelLabel,
+          isShark,
+          savedAt,
+          unsentText: chUnsent,
+          messages: msgs,
+          preview,
+        });
+      });
+
+      if (newDrafts.length > 0) {
+        try {
+          const existingRaw = localStorage.getItem('nerve_chat_drafts_v1');
+          const existing: ChatDraftItem[] = existingRaw ? JSON.parse(existingRaw) : [];
+          const merged = [...newDrafts, ...(Array.isArray(existing) ? existing : [])].slice(0, 25);
+          localStorage.setItem('nerve_chat_drafts_v1', JSON.stringify(merged));
+          localStorage.setItem('nerve_p2p_messages_by_peer_v1', '{}');
+          localStorage.setItem('nerve_tab_closed_archive_v1', '1');
+        } catch {
+          // Ignore storage error on unload
+        }
+      }
+    };
+
+    const handlePageShow = () => {
+      tabArchivedAlreadyRef.current = false;
+    };
+
+    window.addEventListener('pagehide', archiveTabEntriesToDrafts);
+    window.addEventListener('beforeunload', archiveTabEntriesToDrafts);
+    window.addEventListener('pageshow', handlePageShow);
+    return () => {
+      window.removeEventListener('pagehide', archiveTabEntriesToDrafts);
+      window.removeEventListener('beforeunload', archiveTabEntriesToDrafts);
+      window.removeEventListener('pageshow', handlePageShow);
+    };
+  }, []);
 
   const [activeReactionPickerMessageId, setActiveReactionPickerMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -588,6 +854,9 @@ export default function App() {
 
   const [repositories, setRepositories] = useState<Record<string, RepositoryContext>>({});
   const [composerText, setComposerText] = useState<string>('');
+  useEffect(() => {
+    composerTextRef.current = composerText;
+  }, [composerText]);
   const [isSharkThinking, setIsSharkThinking] = useState<boolean>(false);
   const sharkAbortControllerRef = useRef<AbortController | null>(null);
   const sharkRequestIdRef = useRef<number>(0);
@@ -603,6 +872,7 @@ export default function App() {
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
   const chatComposerInputRef = useRef<HTMLInputElement | null>(null);
   const githubSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const githubSearchContainerRef = useRef<HTMLDivElement | null>(null);
   const [sharedFileFeedback, setSharedFileFeedback] = useState<boolean>(false);
 
   const {
@@ -616,6 +886,8 @@ export default function App() {
     setTerminalLogs,
     terminalCommandHistory,
     setTerminalCommandHistory,
+    bookmarkedTerminalCommands,
+    setBookmarkedTerminalCommands,
     patchApplied,
     setPatchApplied,
     keyEnvironment,
@@ -678,6 +950,19 @@ export default function App() {
   // Terminal Settings Menu (Macros + Appearance ANSI Color Schemes + Independent Terminal Output Theme)
   const [showTerminalSettings, setShowTerminalSettings] = useState<boolean>(false);
   const [terminalSettingsTab, setTerminalSettingsTab] = useState<'macros' | 'appearance'>('macros');
+  const [showTerminalHistoryPanel, setShowTerminalHistoryPanel] = useState<boolean>(false);
+  const [terminalHistoryPanelTab, setTerminalHistoryPanelTab] = useState<'history' | 'bookmarks'>('history');
+  const [terminalHistorySearch, setTerminalHistorySearch] = useState<string>('');
+
+  const handleToggleBookmarkCommand = (rawCmd: string) => {
+    const cleanCmd = rawCmd.trim();
+    if (!cleanCmd) return;
+    setBookmarkedTerminalCommands((prev) =>
+      prev.includes(cleanCmd)
+        ? prev.filter((item) => item !== cleanCmd)
+        : [cleanCmd, ...prev]
+    );
+  };
   const [ansiColorScheme, setAnsiColorScheme] = useState<AnsiColorSchemeId>(() => {
     try {
       const saved = localStorage.getItem('nerve_terminal_ansi_scheme_v1') as AnsiColorSchemeId | null;
@@ -777,6 +1062,11 @@ export default function App() {
     draftName: string;
   } | null>(null);
   const [terminalRenameError, setTerminalRenameError] = useState<string>('');
+  useEffect(() => {
+    if (!terminalRenameError) return;
+    const timer = setTimeout(() => setTerminalRenameError(''), 6000);
+    return () => clearTimeout(timer);
+  }, [terminalRenameError]);
   const renameTerminalInputRef = useRef<HTMLInputElement | null>(null);
 
   // Auto-scroll lock refs for terminal log container
@@ -862,12 +1152,20 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [isCodespaceProcessRunning, keyEnvironment, liveApiKey, testApiKey]);
 
-  // Lightweight command suggestion engine matching terminalCommandHistory as user types
+  // Lightweight command suggestion engine matching bookmarked & historical commands as user types
   const commandSuggestions = (() => {
     const query = terminalInput.trim().toLowerCase();
     if (!query) return [];
     const seen = new Set<string>();
     const matches: string[] = [];
+    for (const cmd of bookmarkedTerminalCommands) {
+      const lower = cmd.toLowerCase();
+      if (!seen.has(lower) && lower.includes(query) && lower !== query) {
+        seen.add(lower);
+        matches.push(cmd);
+        if (matches.length >= 5) return matches;
+      }
+    }
     for (let i = terminalCommandHistory.length - 1; i >= 0; i--) {
       const cmd = terminalCommandHistory[i];
       const lower = cmd.toLowerCase();
@@ -1652,16 +1950,138 @@ export default function App() {
     }
   };
 
+  const handleRequestPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    setAuthSuccessNotice('');
+    setDispatchedNotice('');
+
+    const cleanEmail = authEmail.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setAuthError('Enter the email address associated with your account.');
+      return;
+    }
+
+    setIsSubmittingAuth(true);
+    try {
+      let firebaseResetSent = false;
+      try {
+        await sendPasswordResetEmail(auth, cleanEmail);
+        firebaseResetSent = true;
+      } catch {
+        // Proceed with Nerve Auth Server 6-digit reset code dispatch
+      }
+
+      const token = getCachedGmailAccessToken() || '';
+      let serverMessage = '';
+      try {
+        const res = await fetch('/api/v1/auth/forgot-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            email: cleanEmail,
+            gmailAccessToken: token,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok && !firebaseResetSent) {
+          setAuthError(data.message || 'Unable to start password reset.');
+          return;
+        }
+        serverMessage = data.message || '';
+      } catch {
+        if (!firebaseResetSent) {
+          setAuthError('Unable to reach password reset service. Please try again.');
+          return;
+        }
+      }
+
+      setForgotPasswordStep('verify_reset');
+      setResetCodeInput('');
+      setResetNewPassword('');
+      setResetConfirmPassword('');
+      setDispatchedNotice(
+        firebaseResetSent
+          ? `A password reset link and 6-digit code have been sent to ${cleanEmail}. Use the link in your inbox or enter the 6-digit code below.`
+          : serverMessage ||
+              `A 6-digit password reset code has been sent to ${cleanEmail}. Check your inbox and enter it below.`
+      );
+    } catch (err: any) {
+      setAuthError(err?.message || 'Failed to send password reset instructions.');
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
+
+  const handleConfirmPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+
+    const cleanEmail = authEmail.trim().toLowerCase();
+    const cleanCode = resetCodeInput.trim();
+    if (!cleanCode || cleanCode.length < 6) {
+      setAuthError('Enter the 6-digit reset code sent to your email.');
+      return;
+    }
+    if (!resetNewPassword || resetNewPassword.length < 6) {
+      setAuthError('New password must be at least 6 characters.');
+      return;
+    }
+    if (resetNewPassword !== resetConfirmPassword) {
+      setAuthError('Passwords do not match. Please re-enter.');
+      return;
+    }
+
+    setIsSubmittingAuth(true);
+    try {
+      const res = await fetch('/api/v1/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          code: cleanCode,
+          newPassword: resetNewPassword,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAuthError(data.message || 'Could not reset password.');
+        return;
+      }
+
+      setAuthPassword('');
+      setResetCodeInput('');
+      setResetNewPassword('');
+      setResetConfirmPassword('');
+      setDispatchedNotice('');
+      setForgotPasswordStep('request');
+      setAuthModalMode('signin');
+      setAuthSuccessNotice(
+        data.message || 'Password updated successfully. Sign in with your new password.'
+      );
+    } catch (err: any) {
+      setAuthError(err?.message || 'Failed to update password.');
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
+
   const handleGitHubOAuthSignIn = async () => {
     setAuthError('');
     setIsSubmittingAuth(true);
     try {
       const result = await signInWithPopup(auth, githubProvider);
+      const ghCredential = GithubAuthProvider.credentialFromResult(result);
+      if (ghCredential?.accessToken) {
+        setCachedGitHubAccessToken(ghCredential.accessToken);
+      }
       if (result.user) {
         const ghScreenName =
           (result as any)?._tokenResponse?.screenName ||
           (result.user as any)?.reloadUserInfo?.screenName ||
-          result.user.displayName?.toLowerCase().replace(/[^a-z0-9-]/g, '-') ||
           undefined;
         const syncedPeers = await syncAuthenticatedUserAndPeers(result.user, ghScreenName);
         if (syncedPeers.length > 0) {
@@ -1722,6 +2142,9 @@ export default function App() {
     saveVerifiedEmailSession(null);
     saveIntegrationVerifiedEmail('');
     setCachedGmailAccessToken(null);
+    setCachedGitHubAccessToken(null);
+    setShowProfileModal(false);
+    setUserProfile(null);
     setCurrentUser(null);
     if (auth.currentUser || currentUser) {
       try {
@@ -1740,6 +2163,7 @@ export default function App() {
     saveVerifiedEmailSession(null);
     setIntegrationVerifiedEmail('');
     setCachedGmailAccessToken(null);
+    setCachedGitHubAccessToken(null);
     setCurrentUser(null);
     if (auth.currentUser || currentUser) {
       try {
@@ -1811,6 +2235,9 @@ export default function App() {
     };
 
     setCiFailureToasts((prev) => [newToast, ...prev.slice(0, 3)]);
+    setTimeout(() => {
+      setCiFailureToasts((prev) => prev.filter((t) => t.id !== toastId));
+    }, 6000);
 
     if (typeof window !== 'undefined' && 'Notification' in window) {
       if (Notification.permission === 'granted') {
@@ -1851,15 +2278,110 @@ export default function App() {
     });
   }, [repositories]);
 
+  const isSearchHistoryEntryAllowed = (
+    entry: GitHubSearchHistoryEntry,
+    currentPeers: DeveloperPeer[]
+  ): boolean => {
+    const trimmed = entry.query.trim();
+    if (!trimmed) return false;
+    const normalized = trimmed.replace(/^@/, '').toLowerCase();
+    const addedHandles = new Set(currentPeers.map((p) => p.handle.toLowerCase()));
+
+    const looksLikeDeveloperSearch =
+      entry.type === 'users' ||
+      trimmed.startsWith('@') ||
+      entry.isDeveloperQuery ||
+      (!trimmed.includes('/') &&
+        entry.matchedUserLogins.some((login) => login.toLowerCase() === normalized));
+
+    if (looksLikeDeveloperSearch) {
+      return addedHandles.has(normalized);
+    }
+    return true;
+  };
+
+  const visibleSearchHistory = githubSearchHistory.filter((entry) =>
+    isSearchHistoryEntryAllowed(entry, peers)
+  );
+
+  const recordGitHubSearchHistory = (
+    entry: GitHubSearchHistoryEntry,
+    peerList: DeveloperPeer[] = peers
+  ) => {
+    if (!isSearchHistoryEntryAllowed(entry, peerList)) return;
+    const normalizedKey = entry.query.trim().replace(/^@/, '').toLowerCase();
+    setGithubSearchHistory((prev) => {
+      const cleaned = prev.filter((item) => {
+        if (!isSearchHistoryEntryAllowed(item, peerList)) return false;
+        const itemKey = item.query.trim().replace(/^@/, '').toLowerCase();
+        return !(itemKey === normalizedKey && item.isDeveloperQuery === entry.isDeveloperQuery);
+      });
+      return [entry, ...cleaned].slice(0, 10);
+    });
+  };
+
+  const handleClearGitHubSearchInput = (keepHistoryOpen = true) => {
+    setGithubSearchQuery('');
+    setGithubSearchResults({ repositories: [], users: [] });
+    const remainingHistory = githubSearchHistory.filter((entry) =>
+      isSearchHistoryEntryAllowed(entry, peers)
+    );
+    setGithubSearchHistory(remainingHistory);
+    setShowSearchDropdown(keepHistoryOpen && remainingHistory.length > 0);
+  };
+
+  const handleRemoveSearchHistoryEntry = (entryToRemove: GitHubSearchHistoryEntry) => {
+    const targetKey = entryToRemove.query.trim().toLowerCase();
+    setGithubSearchHistory((prev) => {
+      const next = prev.filter(
+        (item) =>
+          !(
+            item.query.trim().toLowerCase() === targetKey &&
+            item.type === entryToRemove.type
+          )
+      );
+      const nextVisible = next.filter((item) => isSearchHistoryEntryAllowed(item, peers));
+      if (!githubSearchQuery.trim() && nextVisible.length === 0) {
+        setShowSearchDropdown(false);
+      }
+      return next;
+    });
+  };
+
+  const handleClearAllSearchHistory = () => {
+    setGithubSearchHistory([]);
+    if (!githubSearchQuery.trim()) {
+      setShowSearchDropdown(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showSearchDropdown) return;
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (
+        githubSearchContainerRef.current &&
+        !githubSearchContainerRef.current.contains(event.target as Node)
+      ) {
+        setShowSearchDropdown(false);
+        if (!githubSearchQuery.trim()) {
+          setGithubSearchResults({ repositories: [], users: [] });
+        }
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [showSearchDropdown, githubSearchQuery]);
+
   // Execute GitHub Search for external repositories & peers
   const handleExecuteGitHubSearch = async (
     e?: React.FormEvent,
-    overrideType?: 'all' | 'repositories' | 'users'
+    overrideType?: 'all' | 'repositories' | 'users',
+    overrideQuery?: string
   ) => {
     if (e) e.preventDefault();
-    const q = githubSearchQuery.trim();
+    const q = (overrideQuery !== undefined ? overrideQuery : githubSearchQuery).trim();
     if (!q) {
-      setShowSearchDropdown(false);
+      handleClearGitHubSearchInput(true);
       return;
     }
 
@@ -1893,25 +2415,57 @@ export default function App() {
 
         if (activeType === 'all' || activeType === 'repositories') {
           try {
-            const rRes = await fetch(
-              `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=4`,
-              { headers }
-            );
-            if (rRes.ok) {
-              const rData = await rRes.json();
-              if (Array.isArray(rData.items)) {
-                repos = rData.items.map((item: any) => ({
-                  fullName: String(
-                    item.full_name || `${item.owner?.login || 'github'}/${item.name || q}`
-                  ),
+            const ownerCandidate = q.includes('/')
+              ? q.split('/')[0].trim()
+              : !/\s/.test(q)
+              ? q.replace(/^@/, '').trim()
+              : '';
+
+            const requests: Promise<Response>[] = [
+              fetch(
+                `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=30`,
+                { headers }
+              ),
+            ];
+            if (ownerCandidate && /^[a-zA-Z0-9-]+$/.test(ownerCandidate)) {
+              requests.unshift(
+                fetch(
+                  `https://api.github.com/users/${encodeURIComponent(ownerCandidate)}/repos?type=public&sort=updated&per_page=100`,
+                  { headers }
+                )
+              );
+            }
+
+            const seen = new Set<string>();
+            const pushMapped = (items: any[]) => {
+              for (const item of items) {
+                const fullName = String(
+                  item.full_name || `${item.owner?.login || 'github'}/${item.name || q}`
+                );
+                const key = fullName.toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                repos.push({
+                  fullName,
                   description: String(
                     item.description || 'External GitHub repository tracked in Nerve Workspace.'
                   ),
                   defaultBranch: String(item.default_branch || 'main'),
-                  stars: Number(item.stargazers_count || 120),
-                  language: String(item.language || 'TypeScript'),
-                  openIssues: Number(item.open_issues_count || 3),
-                }));
+                  stars: Number(item.stargazers_count ?? 0),
+                  language: String(item.language || 'Code'),
+                  openIssues: Number(item.open_issues_count ?? 0),
+                });
+              }
+            };
+
+            const settled = await Promise.allSettled(requests);
+            for (const result of settled) {
+              if (result.status !== 'fulfilled' || !result.value.ok) continue;
+              const rData = await result.value.json();
+              if (Array.isArray(rData)) {
+                pushMapped(rData);
+              } else if (Array.isArray(rData?.items)) {
+                pushMapped(rData.items);
               }
             }
           } catch {
@@ -1922,13 +2476,13 @@ export default function App() {
         if (activeType === 'all' || activeType === 'users') {
           try {
             const uRes = await fetch(
-              `https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=4`,
+              `https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=15`,
               { headers }
             );
             if (uRes.ok) {
               const uData = await uRes.json();
               if (Array.isArray(uData.items)) {
-                users = uData.items.slice(0, 4).map((u: any) => ({
+                users = uData.items.map((u: any) => ({
                   login: String(u.login),
                   name: String(u.login),
                   avatarUrl: String(
@@ -1980,6 +2534,23 @@ export default function App() {
         repositories: repos,
         users: users,
       });
+
+      const matchedUserLogins = users
+        .map((u: any) => String(u.login || '').toLowerCase())
+        .filter(Boolean);
+      const normalizedQ = q.replace(/^@/, '').toLowerCase();
+      const isDeveloperQuery =
+        activeType === 'users' ||
+        q.startsWith('@') ||
+        (activeType === 'all' && !q.includes('/') && matchedUserLogins.includes(normalizedQ));
+
+      recordGitHubSearchHistory({
+        query: q,
+        type: activeType,
+        isDeveloperQuery,
+        matchedUserLogins,
+        timestamp: new Date().toISOString(),
+      });
     } catch (err) {
       console.warn('GitHub search fallback handled smoothly:', err);
     } finally {
@@ -1987,7 +2558,7 @@ export default function App() {
     }
   };
 
-  // Track a real external repository found via GitHub Search and load its real files
+  // Track a real external repository found via GitHub Search and load its real file tree
   const handleTrackExternalRepository = async (repoItem: {
     fullName: string;
     description: string;
@@ -1997,13 +2568,16 @@ export default function App() {
     openIssues: number;
   }) => {
     const repoKey = repoItem.fullName;
-    let filePath = 'src/index.ts';
+    let filePath = 'README.md';
     let lines: string[] = [
       `// Repository: ${repoKey}`,
       `// Branch: ${repoItem.defaultBranch || 'main'}`,
     ];
+    let treeFiles: string[] = [];
     let branch = repoItem.defaultBranch || 'main';
     let openPrs = Math.max(0, repoItem.openIssues || 0);
+    let stars = typeof repoItem.stars === 'number' ? repoItem.stars : 0;
+    let htmlUrl = `https://github.com/${repoKey.replace(/^\/+|\/+$/g, '')}`;
 
     try {
       const filesRes = await fetch(`/api/v1/github/repo-files?repo=${encodeURIComponent(repoKey)}`);
@@ -2013,30 +2587,129 @@ export default function App() {
           filePath = filesData.filePath;
           lines = filesData.lines;
           branch = filesData.branch || branch;
-          openPrs = filesData.openIssues ?? openPrs;
+          openPrs = filesData.openIssues ?? filesData.openPrs ?? openPrs;
+        }
+        if (Array.isArray(filesData.treeFiles) && filesData.treeFiles.length > 0) {
+          treeFiles = filesData.treeFiles;
+        }
+        if (typeof filesData.stars === 'number') {
+          stars = filesData.stars;
+        }
+        if (typeof filesData.htmlUrl === 'string' && filesData.htmlUrl.trim()) {
+          htmlUrl = filesData.htmlUrl;
         }
       } else {
-        // Direct GitHub Raw Content API Fallback
+        // Direct GitHub Tree & Raw Content API Fallback (for static deployments)
+        const headers = { Accept: 'application/vnd.github+json' };
+        const treeRes = await fetch(
+          `https://api.github.com/repos/${repoKey}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+          { headers }
+        );
+        if (treeRes.ok) {
+          const treeData = await treeRes.json();
+          if (Array.isArray(treeData.tree)) {
+            treeFiles = treeData.tree
+              .filter(
+                (item: any) =>
+                  item &&
+                  item.type === 'blob' &&
+                  typeof item.path === 'string' &&
+                  !/\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|mp4|mp3|bin|wasm)$/i.test(item.path)
+              )
+              .map((item: any) => String(item.path))
+              .slice(0, 150);
+          }
+        }
+        const entryCandidate =
+          treeFiles.find((p) => /^(readme\.md|package\.json|src\/index\.(ts|tsx|js))$/i.test(p)) ||
+          treeFiles[0] ||
+          'README.md';
+        filePath = entryCandidate;
+        const encodedEntry = entryCandidate
+          .split('/')
+          .map((seg) => encodeURIComponent(seg))
+          .join('/');
         const rawRes = await fetch(
-          `https://raw.githubusercontent.com/${repoKey}/${branch}/src/index.ts`
+          `https://raw.githubusercontent.com/${repoKey}/${encodeURIComponent(branch)}/${encodedEntry}`
         );
         if (rawRes.ok) {
           const rawText = await rawRes.text();
-          lines = rawText.split('\n');
-          filePath = 'src/index.ts';
+          lines = rawText.split('\n').slice(0, 250);
         }
       }
     } catch {
       // Fallback to header lines if offline
     }
 
-    const primaryPath = filePath.includes('/') ? filePath : `src/${filePath}`;
     const resolvedAuthor =
       selectedPeerHandle ||
-      currentUser?.displayName ||
-      emailSession?.displayName ||
+      userProfile?.displayName ||
       'maintainer';
     const baseLang = (repoItem.language || 'typescript').toLowerCase();
+
+    const filesRecord: RepositoryContext['files'] = {
+      [filePath]: {
+        path: filePath,
+        language: detectCodeLanguage(filePath, baseLang).id,
+        lastCommit: 'HEAD',
+        author: resolvedAuthor,
+        bugLine: 1,
+        lines,
+        patchedLines: [
+          ...lines.slice(0, 5),
+          '// [Nerve Shark] Guard applied for stream safety',
+          ...lines.slice(5),
+        ],
+      },
+    };
+
+    if (treeFiles.length > 0) {
+      for (const pathItem of treeFiles) {
+        if (filesRecord[pathItem]) continue;
+        filesRecord[pathItem] = {
+          path: pathItem,
+          language: detectCodeLanguage(pathItem, baseLang).id,
+          lastCommit: 'HEAD',
+          author: resolvedAuthor,
+          bugLine: 1,
+          lines: [`// Click to load ${pathItem} from ${repoKey}@${branch}...`],
+        };
+      }
+    } else {
+      // Offline / unreachable fallback files
+      filesRecord['src/core/engine.ts'] = {
+        path: 'src/core/engine.ts',
+        language: 'typescript',
+        lastCommit: 'HEAD',
+        author: resolvedAuthor,
+        bugLine: 4,
+        lines: [
+          `// ${repoKey} — Core Execution Pipeline`,
+          'export interface EngineConfig {',
+          '  concurrency: number;',
+          '  timeoutMs: number;',
+          '}',
+          '',
+          'export async function runPipeline(config: EngineConfig): Promise<boolean> {',
+          '  if (config.concurrency <= 0) throw new Error("Invalid concurrency");',
+          '  return true;',
+          '}',
+        ],
+      };
+      filesRecord['package.json'] = {
+        path: 'package.json',
+        language: 'json',
+        lastCommit: 'HEAD',
+        author: resolvedAuthor,
+        bugLine: 1,
+        lines: [
+          '{',
+          `  "name": "${repoKey.split('/')[1] || repoKey}",`,
+          '  "version": "1.0.0"',
+          '}',
+        ],
+      };
+    }
 
     const newRepoContext: RepositoryContext = {
       repo: repoKey,
@@ -2044,74 +2717,11 @@ export default function App() {
       ciStatus: 'Passing',
       latestCommit: 'HEAD',
       openPrs,
+      stars,
+      htmlUrl,
       activeCodespaceId: `cs-${repoKey.split('/')[1] || 'repo'}`,
       description: repoItem.description || '',
-      files: {
-        [primaryPath]: {
-          path: primaryPath,
-          language: baseLang,
-          lastCommit: 'HEAD',
-          author: resolvedAuthor,
-          bugLine: 1,
-          lines,
-          patchedLines: [
-            ...lines.slice(0, 5),
-            '// [Nerve Shark] Guard applied for stream safety',
-            ...lines.slice(5),
-          ],
-        },
-        'src/core/engine.ts': {
-          path: 'src/core/engine.ts',
-          language: 'typescript',
-          lastCommit: 'HEAD',
-          author: resolvedAuthor,
-          bugLine: 4,
-          lines: [
-            `// ${repoKey} — Core Execution Pipeline`,
-            'export interface EngineConfig {',
-            '  concurrency: number;',
-            '  timeoutMs: number;',
-            '}',
-            '',
-            'export async function runPipeline(config: EngineConfig): Promise<boolean> {',
-            '  if (config.concurrency <= 0) throw new Error("Invalid concurrency");',
-            '  return true;',
-            '}',
-          ],
-        },
-        'tests/runtime.spec.ts': {
-          path: 'tests/runtime.spec.ts',
-          language: 'typescript',
-          lastCommit: 'HEAD',
-          author: resolvedAuthor,
-          bugLine: 2,
-          lines: [
-            `import { runPipeline } from "../src/core/engine";`,
-            '',
-            'export async function verifyRuntimeSuite() {',
-            '  const ok = await runPipeline({ concurrency: 4, timeoutMs: 2000 });',
-            '  console.log("Suite passed:", ok);',
-            '}',
-          ],
-        },
-        'package.json': {
-          path: 'package.json',
-          language: 'json',
-          lastCommit: 'HEAD',
-          author: resolvedAuthor,
-          bugLine: 1,
-          lines: [
-            '{',
-            `  "name": "${repoKey.split('/')[1] || repoKey}",`,
-            '  "version": "1.0.0",',
-            '  "scripts": {',
-            '    "test": "vitest run",',
-            '    "build": "tsc --noEmit"',
-            '  }',
-            '}',
-          ],
-        },
-      },
+      files: filesRecord,
     };
 
     prevCiStatusMapRef.current[repoKey] = 'Passing';
@@ -2120,7 +2730,7 @@ export default function App() {
       [repoKey]: newRepoContext,
     }));
     setActiveRepoKey(repoKey);
-    setActiveFilePath(primaryPath);
+    setActiveFilePath(filePath);
     setHighlightedLine(1);
     setBugRepo(repoKey);
     setBugBranch(branch);
@@ -2142,8 +2752,111 @@ export default function App() {
           latestCommit: 'HEAD',
         }),
       });
+      recordGitHubSearchHistory({
+        query: repoItem.fullName,
+        type: 'repositories',
+        isDeveloperQuery: false,
+        matchedUserLogins: [],
+        timestamp: new Date().toISOString(),
+      });
     } catch {
       // Ignore network error in offline mode
+    }
+  };
+
+  // Close / untrack an open repository while keeping the authenticated user and active chat intact
+  const handleCloseTrackedRepository = (repoSlug: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const remainingKeys = Object.keys(repositories).filter((k) => k !== repoSlug);
+    setRepositories((prev) => {
+      const next = { ...prev };
+      delete next[repoSlug];
+      return next;
+    });
+    if (activeRepoKey === repoSlug) {
+      const nextRepoKey = remainingKeys[0] || '';
+      const nextRepo = nextRepoKey ? repositories[nextRepoKey] : undefined;
+      const nextFile = nextRepo ? Object.keys(nextRepo.files)[0] || '' : '';
+      setActiveRepoKey(nextRepoKey);
+      setActiveFilePath(nextFile);
+      setHighlightedLine(1);
+      setPatchApplied(false);
+    }
+  };
+
+  // Select a file in the File Explorer and lazily fetch its real raw GitHub content if needed
+  const handleSelectRepoFile = async (repoKey: string, filePath: string, line = 1) => {
+    setActiveRepoKey(repoKey);
+    setActiveFilePath(filePath);
+    setHighlightedLine(line);
+    setPatchApplied(false);
+
+    const repoObj = repositories[repoKey];
+    const fileMeta = repoObj?.files[filePath];
+    if (
+      !repoObj ||
+      !fileMeta ||
+      !(
+        fileMeta.lines.length === 1 &&
+        fileMeta.lines[0].startsWith('// Click to load ')
+      )
+    ) {
+      return;
+    }
+
+    const branch = repoObj.branch || 'main';
+    let loadedLines: string[] | null = null;
+    try {
+      const res = await fetch(
+        `/api/v1/github/file-content?repo=${encodeURIComponent(repoKey)}&branch=${encodeURIComponent(branch)}&path=${encodeURIComponent(filePath)}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.lines) && data.lines.length > 0) {
+          loadedLines = data.lines;
+        }
+      }
+    } catch {
+      // Try direct raw.githubusercontent.com fallback below
+    }
+
+    if (!loadedLines) {
+      try {
+        const encodedPath = filePath
+          .split('/')
+          .map((seg) => encodeURIComponent(seg))
+          .join('/');
+        const rawRes = await fetch(
+          `https://raw.githubusercontent.com/${repoKey}/${encodeURIComponent(branch)}/${encodedPath}`
+        );
+        if (rawRes.ok) {
+          const text = await rawRes.text();
+          loadedLines = text.split('\n').slice(0, 400);
+        }
+      } catch {
+        // Ignore offline error
+      }
+    }
+
+    if (loadedLines) {
+      const finalLines = loadedLines;
+      setRepositories((prev) => {
+        const target = prev[repoKey];
+        if (!target || !target.files[filePath]) return prev;
+        return {
+          ...prev,
+          [repoKey]: {
+            ...target,
+            files: {
+              ...target.files,
+              [filePath]: {
+                ...target.files[filePath],
+                lines: finalLines,
+              },
+            },
+          },
+        };
+      });
     }
   };
 
@@ -2152,11 +2865,22 @@ export default function App() {
     setIsAddingPeer(true);
     try {
       const addedPeer = await addRealGitHubPeerToFirestore(currentUser, login);
-      setPeers((prev) => {
-        const exists = prev.some((p) => p.handle.toLowerCase() === addedPeer.handle.toLowerCase());
-        if (exists) return prev;
-        return [addedPeer, ...prev];
-      });
+      const nextPeers = peers.some(
+        (p) => p.handle.toLowerCase() === addedPeer.handle.toLowerCase()
+      )
+        ? peers
+        : [addedPeer, ...peers];
+      setPeers(nextPeers);
+      recordGitHubSearchHistory(
+        {
+          query: `@${addedPeer.handle}`,
+          type: 'users',
+          isDeveloperQuery: true,
+          matchedUserLogins: [addedPeer.handle.toLowerCase()],
+          timestamp: new Date().toISOString(),
+        },
+        nextPeers
+      );
       setSelectedPeerHandle(addedPeer.handle);
       setShowSearchDropdown(false);
     } catch (err) {
@@ -2173,18 +2897,20 @@ export default function App() {
     }
     const cleanHandle = peerHandle.trim().replace(/^@/, '').toLowerCase();
 
-    setPeers((prev) => {
-      const remaining = prev.filter((p) => p.handle.toLowerCase() !== cleanHandle);
-      if (selectedPeerHandle.toLowerCase() === cleanHandle) {
-        setSelectedPeerHandle('');
-      }
-      return remaining;
-    });
+    const remainingPeers = peers.filter((p) => p.handle.toLowerCase() !== cleanHandle);
+    setPeers(remainingPeers);
+    if (selectedPeerHandle.toLowerCase() === cleanHandle) {
+      setSelectedPeerHandle('');
+    }
 
     setGithubSearchResults((prev) => ({
       ...prev,
       users: prev.users.filter((u) => u.login.toLowerCase() !== cleanHandle),
     }));
+
+    setGithubSearchHistory((prev) =>
+      prev.filter((entry) => isSearchHistoryEntryAllowed(entry, remainingPeers))
+    );
 
     try {
       await deleteGitHubPeerFromFirestore(currentUser, cleanHandle);
@@ -2255,9 +2981,10 @@ export default function App() {
     }
   };
 
-  // Automatic Network Data Observer: Actively probes live network data so turning off Wi-Fi/mobile data immediately switches to Offline, and turning it back on switches to Online
+  // Automatic Network Phase Observer: Actively detects real online / slow / reconnecting / offline phases
   useEffect(() => {
     let isMounted = true;
+    let quickRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
     const markOnlineState = (onlineNow: boolean) => {
       if (!isMounted) return;
@@ -2270,28 +2997,29 @@ export default function App() {
     };
 
     const probeLiveNetwork = async () => {
+      if (!isMounted) return;
+      if (quickRetryTimer) {
+        clearTimeout(quickRetryTimer);
+        quickRetryTimer = null;
+      }
+
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        consecutiveNetFailuresRef.current = 2;
         setNetworkSignalQuality('offline');
         setNetworkLatency(null);
+        setNetworkPhase('offline');
         markOnlineState(false);
         return;
       }
 
       const startTime = performance.now();
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
 
       try {
-        // Probe internet availability using gstatic lightweight endpoint
-        // and origin server endpoint in parallel without requiring origin API to succeed on static Vercel
-        const internetPing = fetch(`https://www.gstatic.com/generate_204?_ping=${Date.now()}`, {
-          method: 'GET',
-          mode: 'no-cors',
-          cache: 'no-store',
-          signal: controller.signal,
-        });
-
-        const originPing = fetch(`/api/v1/ci/status?_ping=${Date.now()}`, {
+        // Probe same-origin health endpoint and lightweight internet check in parallel.
+        // Using Promise.any ensures BOTH failures actually reject (never masked by .catch(() => null)).
+        const originPing = fetch(`/api/v1/health?_ping=${Date.now()}`, {
           method: 'GET',
           cache: 'no-store',
           headers: {
@@ -2299,64 +3027,106 @@ export default function App() {
             Pragma: 'no-cache',
           },
           signal: controller.signal,
-        }).catch(() => null);
+        }).then((res) => {
+          if (!res) throw new Error('No origin response');
+          return res;
+        });
 
-        // A response from either confirms connectivity
-        await Promise.race([internetPing, originPing]);
+        const internetPing = fetch(`https://www.gstatic.com/generate_204?_ping=${Date.now()}`, {
+          method: 'GET',
+          mode: 'no-cors',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+
+        await Promise.any([originPing, internetPing]);
         clearTimeout(timeoutId);
+        if (!isMounted) return;
 
+        consecutiveNetFailuresRef.current = 0;
         const latency = Math.round(performance.now() - startTime);
+        const navConn = (navigator as any)?.connection;
+        const effectiveType = typeof navConn?.effectiveType === 'string' ? navConn.effectiveType : '';
+        const isConstrainedLink = effectiveType === 'slow-2g' || effectiveType === '2g';
+
         setNetworkLatency(latency);
-        if (latency < 160) {
-          setNetworkSignalQuality('strong');
-        } else if (latency < 450) {
-          setNetworkSignalQuality('moderate');
-        } else {
+        if (isConstrainedLink || latency >= 450) {
           setNetworkSignalQuality('slow');
+          setNetworkPhase('slow');
+        } else if (latency < 160) {
+          setNetworkSignalQuality('strong');
+          setNetworkPhase('online');
+        } else {
+          setNetworkSignalQuality('moderate');
+          setNetworkPhase('online');
         }
         markOnlineState(true);
       } catch {
         clearTimeout(timeoutId);
-        if (typeof navigator !== 'undefined' && navigator.onLine) {
-          setNetworkSignalQuality('slow');
-          setNetworkLatency(null);
-          markOnlineState(true);
-        } else {
+        if (!isMounted) return;
+
+        consecutiveNetFailuresRef.current += 1;
+        const browserSaysOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+
+        if (browserSaysOffline || consecutiveNetFailuresRef.current >= 2) {
           setNetworkSignalQuality('offline');
           setNetworkLatency(null);
+          setNetworkPhase('offline');
           markOnlineState(false);
+        } else {
+          setNetworkPhase('reconnecting');
+          quickRetryTimer = setTimeout(() => {
+            if (isMounted) probeLiveNetwork();
+          }, 1200);
         }
       }
     };
 
+    probeLiveNetworkRef.current = probeLiveNetwork;
+
     const handleOnline = () => {
+      if (!isMounted) return;
+      consecutiveNetFailuresRef.current = 0;
+      setNetworkPhase('reconnecting');
       probeLiveNetwork();
     };
 
     const handleOffline = () => {
+      if (!isMounted) return;
+      consecutiveNetFailuresRef.current = 2;
+      setNetworkSignalQuality('offline');
+      setNetworkLatency(null);
+      setNetworkPhase('offline');
       markOnlineState(false);
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'hidden') return;
+      probeLiveNetwork();
     };
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    window.addEventListener('focus', probeLiveNetwork);
-    document.addEventListener('visibilitychange', probeLiveNetwork);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     const navConn = (navigator as any)?.connection;
     if (navConn && typeof navConn.addEventListener === 'function') {
       navConn.addEventListener('change', probeLiveNetwork);
     }
 
-    // Initial check & continuous 2-second live network observer
+    // Initial check & continuous live network phase observer
     probeLiveNetwork();
-    const heartbeat = setInterval(probeLiveNetwork, 2000);
+    const heartbeat = setInterval(probeLiveNetwork, 4000);
 
     return () => {
       isMounted = false;
+      probeLiveNetworkRef.current = null;
+      if (quickRetryTimer) clearTimeout(quickRetryTimer);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
-      window.removeEventListener('focus', probeLiveNetwork);
-      document.removeEventListener('visibilitychange', probeLiveNetwork);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       if (navConn && typeof navConn.removeEventListener === 'function') {
         navConn.removeEventListener('change', probeLiveNetwork);
       }
@@ -2432,6 +3202,105 @@ export default function App() {
       : activeFile.lines
     : [];
 
+  // Dynamically hydrate live GitHub Stars & URL for the active repository
+  useEffect(() => {
+    const repoSlug = activeRepo?.repo?.trim();
+    if (!repoSlug || !repoSlug.includes('/') || isOffline) return;
+
+    const lastFetched = repoStarsLastFetchedRef.current[repoSlug] || 0;
+    if (Date.now() - lastFetched < 60_000) return;
+    repoStarsLastFetchedRef.current[repoSlug] = Date.now();
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `https://api.github.com/repos/${repoSlug.replace(/^\/+|\/+$/g, '')}`,
+          { headers: { Accept: 'application/vnd.github+json' } }
+        );
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (cancelled) return;
+
+        const liveStars =
+          typeof data?.stargazers_count === 'number' ? data.stargazers_count : undefined;
+        const liveUrl =
+          typeof data?.html_url === 'string' && data.html_url.trim()
+            ? data.html_url
+            : `https://github.com/${repoSlug.replace(/^\/+|\/+$/g, '')}`;
+
+        if (liveStars !== undefined || liveUrl) {
+          setRepositories((prev) => {
+            const existing = prev[repoSlug];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [repoSlug]: {
+                ...existing,
+                ...(liveStars !== undefined ? { stars: liveStars } : {}),
+                htmlUrl: liveUrl,
+              },
+            };
+          });
+        }
+      } catch {
+        // Keep current cached star count if GitHub API is unreachable or rate-limited
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRepo?.repo, isOffline]);
+
+  const formatStarCount = (count: number): string => {
+    if (count >= 10000) return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+    return count.toLocaleString();
+  };
+
+  const getGitHubRepoUrl = (repoObj: RepositoryContext): string =>
+    repoObj.htmlUrl || `https://github.com/${repoObj.repo.replace(/^\/+|\/+$/g, '')}`;
+
+  const handleToggleRepoStar = (repoSlug: string) => {
+    setStarredRepos((prev) => ({
+      ...prev,
+      [repoSlug]: !prev[repoSlug],
+    }));
+  };
+
+  const handleCopyActiveFilePath = () => {
+    if (!activeFile) return;
+    const fullPath = activeRepo ? `${activeRepo.repo}/${activeFile.path}` : activeFile.path;
+    const finishCopy = () => {
+      setCopiedFilePathFeedback(true);
+      if (copiedFilePathTimerRef.current) clearTimeout(copiedFilePathTimerRef.current);
+      copiedFilePathTimerRef.current = setTimeout(() => setCopiedFilePathFeedback(false), 1800);
+    };
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard
+        .writeText(fullPath)
+        .then(finishCopy)
+        .catch(() => {
+          const el = document.createElement('textarea');
+          el.value = fullPath;
+          el.style.position = 'fixed';
+          el.style.opacity = '0';
+          document.body.appendChild(el);
+          el.select();
+          try {
+            document.execCommand('copy');
+          } catch {
+            // Ignore fallback error
+          }
+          document.body.removeChild(el);
+          finishCopy();
+        });
+    } else {
+      finishCopy();
+    }
+  };
+
   const activePeerKey = activePeer?.handle || selectedPeerHandle || '';
   const currentMessages = activePeerKey ? messagesByPeer[activePeerKey] || [] : [];
   const trimmedChatSearch = chatMessageSearchQuery.trim();
@@ -2459,16 +3328,147 @@ export default function App() {
     );
   };
 
-  const authenticatedDisplayName =
-    currentUser?.displayName || emailSession?.displayName || currentUser?.email || emailSession?.email || '';
   const activeSignedInEmail =
     currentUser?.email ||
     emailSession?.email ||
     integrationVerifiedEmail ||
     currentUser?.providerData?.find((p) => p?.email)?.email ||
     '';
+
+  const profileAccountKey =
+    currentUser?.uid ||
+    emailSession?.uid ||
+    (activeSignedInEmail ? activeSignedInEmail.toLowerCase() : '');
+
+  useEffect(() => {
+    if (!profileAccountKey) {
+      setUserProfile(null);
+      return;
+    }
+
+    let cancelled = false;
+    const storageKey = `nerve_user_profile_v1:${profileAccountKey}`;
+    let localProfile: NerveUserProfile | null = null;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const isLegacySeeded =
+            !parsed.syncedFromGitHub &&
+            parsed.bio === 'Authenticated Nerve P2P Developer' &&
+            parsed.publicRepos === 42 &&
+            parsed.followers === 120 &&
+            parsed.following === 85;
+          if (isLegacySeeded) {
+            localStorage.removeItem(storageKey);
+          } else {
+            const sanitizedHandle =
+              !parsed.syncedFromGitHub &&
+              String(parsed.githubHandle || '').trim().toLowerCase() === 'developer'
+                ? ''
+                : String(parsed.githubHandle || '');
+            localProfile = {
+              ...(parsed as NerveUserProfile),
+              githubHandle: sanitizedHandle,
+            };
+          }
+        }
+      }
+    } catch {
+      // Ignore invalid local storage payload
+    }
+
+    if (localProfile) {
+      setUserProfile(localProfile);
+    } else {
+      setUserProfile(null);
+    }
+
+    if (currentUser) {
+      fetchUserProfileFromFirestore(currentUser)
+        .then((remote) => {
+          if (cancelled || !remote) return;
+          setUserProfile((prev) => {
+            const base = prev || localProfile;
+            const merged: NerveUserProfile = {
+              displayName: base?.displayName || remote.displayName || '',
+              githubHandle: base?.githubHandle || remote.githubHandle || '',
+              avatarUrl: base?.avatarUrl || remote.avatarUrl || '',
+              bio: base?.bio ?? remote.bio ?? '',
+              company: base?.company ?? remote.company ?? '',
+              location: base?.location ?? remote.location ?? '',
+              website: base?.website ?? remote.website ?? '',
+              pronouns: base?.pronouns ?? remote.pronouns ?? '',
+              publicRepos: base?.publicRepos ?? remote.publicRepos ?? 0,
+              followers: base?.followers ?? remote.followers ?? 0,
+              following: base?.following ?? remote.following ?? 0,
+              syncedFromGitHub: Boolean(base?.syncedFromGitHub || remote.syncedFromGitHub),
+              updatedAt: base?.updatedAt || new Date().toISOString(),
+            };
+            try {
+              localStorage.setItem(storageKey, JSON.stringify(merged));
+            } catch {
+              // Ignore storage quota errors
+            }
+            return merged;
+          });
+        })
+        .catch(() => {
+          // Non-fatal fallback
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [profileAccountKey, currentUser, activeSignedInEmail]);
+
+  const handleSaveUserProfile = async (nextProfile: NerveUserProfile) => {
+    setUserProfile(nextProfile);
+    if (profileAccountKey) {
+      try {
+        localStorage.setItem(
+          `nerve_user_profile_v1:${profileAccountKey}`,
+          JSON.stringify(nextProfile)
+        );
+      } catch {
+        // Ignore storage quota errors
+      }
+    }
+    if (emailSession && nextProfile.displayName) {
+      saveVerifiedEmailSession({
+        ...emailSession,
+        displayName: nextProfile.displayName,
+      });
+    }
+    if (currentUser) {
+      await saveUserProfileToFirestore(currentUser, nextProfile);
+    }
+  };
+
+  const authenticatedDisplayName = userProfile?.displayName || '';
+  const authenticatedAvatarUrl = userProfile?.avatarUrl || '';
+  const detectedGitHubHandle = userProfile?.githubHandle || '';
+  const effectiveUserProfile: NerveUserProfile = {
+    displayName: userProfile?.displayName || '',
+    githubHandle: userProfile?.githubHandle || '',
+    avatarUrl: userProfile?.avatarUrl || '',
+    bio: userProfile?.bio || '',
+    company: userProfile?.company || '',
+    location: userProfile?.location || '',
+    website: userProfile?.website || '',
+    pronouns: userProfile?.pronouns || '',
+    publicRepos: userProfile?.publicRepos || 0,
+    followers: userProfile?.followers || 0,
+    following: userProfile?.following || 0,
+    syncedFromGitHub: Boolean(userProfile?.syncedFromGitHub),
+    updatedAt: userProfile?.updatedAt,
+  };
   const currentSenderHandle =
-    authenticatedDisplayName.toLowerCase().replace(/[^a-z0-9-]/g, '-') || 'developer';
+    (detectedGitHubHandle || authenticatedDisplayName)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-') || 'member';
 
   const handleOpenConnectedUsersModal = (emailOverride?: string) => {
     const resolvedEmail = (emailOverride || activeSignedInEmail || '').trim();
@@ -2543,7 +3543,7 @@ export default function App() {
     roomId: p2pRoomId,
     passphrase: p2pPassphrase,
     localHandle: currentSenderHandle,
-    localDisplayName: authenticatedDisplayName || 'Developer',
+    localDisplayName: authenticatedDisplayName || activeSignedInEmail || 'You',
     transportMode: p2pTransportMode,
     onIncomingChatMessage: (peerHandle, incomingMsg) => {
       const targetKey = activePeerKey || peerHandle;
@@ -2834,15 +3834,147 @@ export default function App() {
     setIsSharkThinking(false);
   };
 
-  const handleCloseActiveChannel = () => {
+  const archiveAndClearChannel = (channelKey: string, includeUnsent = true) => {
+    if (!channelKey) return;
     handleCancelNerveShark();
+
+    const closingMsgs = [
+      ...(messagesByPeerRef.current[channelKey] || messagesByPeer[channelKey] || []),
+    ];
+    const closingUnsent = includeUnsent ? (composerTextRef.current || composerText).trim() : '';
+
+    if (closingMsgs.length > 0 || closingUnsent) {
+      const isShark = channelKey === 'nerve-shark';
+      const peerObj = peersRef.current.find((p) => p.handle === channelKey);
+      const channelLabel = isShark
+        ? 'Nerve Shark'
+        : peerObj
+        ? `@${peerObj.handle}`
+        : `@${channelKey}`;
+      const lastMsg = closingMsgs[closingMsgs.length - 1];
+      const preview = closingUnsent
+        ? `Draft: ${closingUnsent}`
+        : lastMsg?.text
+        ? lastMsg.text.slice(0, 140)
+        : `${closingMsgs.length} message(s)`;
+
+      const draftEntry: ChatDraftItem = {
+        id: `draft-${Date.now()}-${channelKey}`,
+        channelKey,
+        channelLabel,
+        isShark,
+        savedAt: new Date().toLocaleTimeString(),
+        unsentText: closingUnsent,
+        messages: closingMsgs,
+        preview,
+      };
+
+      setChatDrafts((prev) => {
+        const nextDrafts = [draftEntry, ...prev].slice(0, 25);
+        try {
+          localStorage.setItem('nerve_chat_drafts_v1', JSON.stringify(nextDrafts));
+        } catch {
+          // Ignore storage error
+        }
+        return nextDrafts;
+      });
+    }
+
+    // Synchronously purge ALL entries from ref, state, and localStorage so reopening starts completely fresh
+    const nextRefMap = { ...messagesByPeerRef.current };
+    delete nextRefMap[channelKey];
+    messagesByPeerRef.current = nextRefMap;
+    try {
+      localStorage.setItem('nerve_p2p_messages_by_peer_v1', JSON.stringify(nextRefMap));
+    } catch {
+      // Ignore storage error
+    }
+    setMessagesByPeer((prev) => {
+      const next = { ...prev };
+      delete next[channelKey];
+      return next;
+    });
+
+    if (includeUnsent) {
+      composerTextRef.current = '';
+      setComposerText('');
+    }
+  };
+
+  const handleCloseActiveChannel = () => {
+    const closingKey = activePeerKey || selectedPeerHandleRef.current || selectedPeerHandle;
+    if (closingKey) {
+      archiveAndClearChannel(closingKey, true);
+    } else {
+      handleCancelNerveShark();
+    }
+
+    selectedPeerHandleRef.current = '';
     setSelectedPeerHandle('');
+    composerTextRef.current = '';
     setComposerText('');
     setChatMessageSearchQuery('');
     setEditingMessageId(null);
     setEditingMessageText('');
     setConfirmDeleteMessageId(null);
+    setConfirmClearChatAll(false);
+    setShowDraftsMenu(false);
     setActiveReactionPickerMessageId(null);
+  };
+
+  const handleClearActiveChatEntries = () => {
+    const channelKey = activePeerKey;
+    if (!channelKey) return;
+    handleCancelNerveShark();
+    const nextRefMap = { ...messagesByPeerRef.current };
+    delete nextRefMap[channelKey];
+    messagesByPeerRef.current = nextRefMap;
+    try {
+      localStorage.setItem('nerve_p2p_messages_by_peer_v1', JSON.stringify(nextRefMap));
+    } catch {
+      // Ignore storage error
+    }
+    setMessagesByPeer((prev) => {
+      const next = { ...prev };
+      delete next[channelKey];
+      return next;
+    });
+    setEditingMessageId(null);
+    setEditingMessageText('');
+    setConfirmDeleteMessageId(null);
+    setActiveReactionPickerMessageId(null);
+    setChatMessageSearchQuery('');
+    setConfirmClearChatAll(false);
+  };
+
+  const handleRestoreDraft = (draft: ChatDraftItem) => {
+    selectedPeerHandleRef.current = draft.channelKey;
+    setSelectedPeerHandle(draft.channelKey);
+    if (draft.messages.length > 0) {
+      const mergedMsgs = [
+        ...(messagesByPeerRef.current[draft.channelKey] || []),
+        ...draft.messages,
+      ];
+      messagesByPeerRef.current = {
+        ...messagesByPeerRef.current,
+        [draft.channelKey]: mergedMsgs,
+      };
+      setMessagesByPeer((prev) => ({
+        ...prev,
+        [draft.channelKey]: [...(prev[draft.channelKey] || []), ...draft.messages],
+      }));
+    }
+    if (draft.unsentText) {
+      composerTextRef.current = draft.unsentText;
+      setComposerText(draft.unsentText);
+    }
+    setChatDrafts((prev) => prev.filter((item) => item.id !== draft.id));
+    setShowDraftsMenu(false);
+    setTimeout(() => chatComposerInputRef.current?.focus(), 20);
+  };
+
+  const handleDeleteDraft = (draftId: string) => {
+    setChatDrafts((prev) => prev.filter((item) => item.id !== draftId));
   };
 
   const handleSendMessage = async (e?: React.FormEvent, overrideText?: string) => {
@@ -3023,6 +4155,11 @@ export default function App() {
       return;
     }
 
+    const nextChannelMsgs = [...(messagesByPeerRef.current[targetChannelKey] || []), userMsg];
+    messagesByPeerRef.current = {
+      ...messagesByPeerRef.current,
+      [targetChannelKey]: nextChannelMsgs,
+    };
     setMessagesByPeer((prev) => ({
       ...prev,
       [targetChannelKey]: [...(prev[targetChannelKey] || []), userMsg],
@@ -3220,6 +4357,18 @@ export default function App() {
           : {}),
       };
 
+      if (
+        controller.signal.aborted ||
+        requestId !== sharkRequestIdRef.current ||
+        selectedPeerHandleRef.current !== targetChannelKey
+      ) {
+        return;
+      }
+
+      messagesByPeerRef.current = {
+        ...messagesByPeerRef.current,
+        [targetChannelKey]: [...(messagesByPeerRef.current[targetChannelKey] || []), sharkMsg],
+      };
       setMessagesByPeer((prev) => ({
         ...prev,
         [targetChannelKey]: [...(prev[targetChannelKey] || []), sharkMsg],
@@ -3236,6 +4385,14 @@ export default function App() {
   };
 
   const handleStartEditMessage = (msg: ChatMessage) => {
+    // Nerve Shark answers are never editable; only user questions can be edited
+    if (
+      msg.senderRole === 'copilot' ||
+      msg.senderHandle === 'nerve-shark' ||
+      (isSharkChannelActive && msg.senderRole !== 'self')
+    ) {
+      return;
+    }
     setActiveReactionPickerMessageId(null);
     setConfirmDeleteMessageId(null);
     setEditingMessageId(msg.id);
@@ -3299,6 +4456,29 @@ export default function App() {
   };
 
   const handleApplyPatchToCodespace = (msgId?: string) => {
+    if (msgId && activePeerKey && activeRepo && activeFile) {
+      const targetMsg = (messagesByPeer[activePeerKey] || []).find((m) => m.id === msgId);
+      const editedPatch = targetMsg?.copilotPatch?.suggestedPatch;
+      if (editedPatch && editedPatch.trim()) {
+        setRepositories((prev) => {
+          const repoObj = prev[activeRepo.repo];
+          if (!repoObj || !repoObj.files[activeFile.path]) return prev;
+          return {
+            ...prev,
+            [activeRepo.repo]: {
+              ...repoObj,
+              files: {
+                ...repoObj.files,
+                [activeFile.path]: {
+                  ...repoObj.files[activeFile.path],
+                  patchedLines: editedPatch.split('\n'),
+                },
+              },
+            },
+          };
+        });
+      }
+    }
     setPatchApplied(true);
     setIsCodeDrawerOpen(true);
     setShowTerminal(true);
@@ -4129,6 +5309,7 @@ export default function App() {
               setShowConnectedUsersModal(false);
               setShowSearchDropdown(false);
               setGithubSearchQuery('');
+              setGithubSearchResults({ repositories: [], users: [] });
               setGithubSearchType('all');
               setShowWorkspaceDashboard(true);
               setWorkspaceDashboardTab('contributors');
@@ -4181,62 +5362,77 @@ export default function App() {
 
         {/* Desktop Right Controls */}
         <div className="hidden md:flex items-center gap-2 shrink-0">
-          {isOffline && (
-            <span
-              role="status"
-              aria-live="polite"
-              title="Offline — actions are queued locally"
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-amber-700 dark:text-amber-300 border border-amber-500/40 bg-amber-500/10 whitespace-nowrap shrink-0"
-            >
-              <WifiOff className="w-3.5 h-3.5" />
-              <span>Offline</span>
-            </span>
-          )}
+          <button
+            type="button"
+            role="status"
+            aria-live="polite"
+            aria-label={
+              isOffline || networkPhase === 'offline'
+                ? 'Network Offline'
+                : networkPhase === 'reconnecting'
+                ? 'Network Reconnecting'
+                : networkPhase === 'slow'
+                ? 'Network Online (Slow)'
+                : 'Network Online'
+            }
+            onClick={() => probeLiveNetworkRef.current?.()}
+            title={
+              isOffline || networkPhase === 'offline'
+                ? 'Offline — actions are queued locally. Click to re-check connection.'
+                : networkPhase === 'reconnecting'
+                ? 'Reconnecting to network — click to re-probe.'
+                : networkPhase === 'slow'
+                ? `Connected (Slow signal${networkLatency !== null ? ` · ${networkLatency}ms` : ''}) — click to re-probe.`
+                : `Connected (${networkSignalQuality} signal${networkLatency !== null ? ` · ${networkLatency}ms` : ''}) — auto-switches on network changes.`
+            }
+            className={`p-1.5 rounded-md border transition-colors cursor-pointer shrink-0 flex items-center justify-center ${
+              isOffline || networkPhase === 'offline'
+                ? 'text-red-600 dark:text-red-400 border-red-500/40 bg-red-500/10'
+                : networkPhase === 'reconnecting' || networkPhase === 'slow'
+                ? 'text-amber-600 dark:text-amber-400 border-amber-500/40 bg-amber-500/10'
+                : 'text-emerald-600 dark:text-emerald-400 border-emerald-500/35 bg-emerald-500/10'
+            }`}
+          >
+            {isOffline || networkPhase === 'offline' ? (
+              <WifiOff className="w-4 h-4 shrink-0" />
+            ) : networkPhase === 'reconnecting' ? (
+              <RefreshCw className="w-4 h-4 shrink-0 animate-spin" />
+            ) : (
+              <Wifi className="w-4 h-4 shrink-0" />
+            )}
+          </button>
 
-          {isAuthenticated ? (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-xs">
-              {currentUser?.photoURL && (
-                <img
-                  src={currentUser.photoURL}
-                  alt={authenticatedDisplayName}
-                  className="w-4 h-4 rounded-full shrink-0"
-                  referrerPolicy="no-referrer"
-                />
-              )}
-              <span className="font-medium text-[#1f2328] dark:text-[#e6edf3] max-w-[120px] truncate">
-                {authenticatedDisplayName}
-              </span>
-              {activeSignedInEmail && (
-                <button
-                  type="button"
-                  onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
-                  title={`View @users connected to ${activeSignedInEmail}`}
-                  className="text-[11px] font-mono text-blue-600 dark:text-blue-400 hover:underline whitespace-nowrap shrink-0 cursor-pointer ml-0.5"
-                >
-                  @users
-                </button>
-              )}
-              <button
-                onClick={handleSignOutAll}
-                title="Sign Out"
-                className="text-[#656d76] dark:text-[#8b949e] hover:text-red-500 cursor-pointer ml-1"
+          <button
+            type="button"
+            aria-label="Open Nerve Shark chatbox"
+            title={isSharkChannelActive && activeTab === 'workspace' ? 'Close Nerve Shark' : 'Open Nerve Shark'}
+            onClick={() => {
+              if (activeTab === 'workspace' && isSharkChannelActive) {
+                handleCloseActiveChannel();
+                return;
+              }
+              setActiveTab('workspace');
+              selectedPeerHandleRef.current = 'nerve-shark';
+              setSelectedPeerHandle('nerve-shark');
+              setTimeout(() => chatComposerInputRef.current?.focus(), 0);
+            }}
+            className={`relative p-1.5 rounded-md border transition-colors cursor-pointer shrink-0 flex items-center justify-center ${
+              isSharkChannelActive && activeTab === 'workspace'
+                ? 'border-blue-600 bg-blue-600 text-white'
+                : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] text-blue-600 dark:text-blue-400 hover:border-blue-500 hover:bg-[#f3f4f6] dark:hover:bg-[#30363d]'
+            }`}
+          >
+            <PenLine className="w-4 h-4 shrink-0" />
+            {chatDrafts.some((d) => d.isShark) && (
+              <span
+                aria-hidden="true"
+                className="absolute -top-1 -right-1 flex h-2 w-2"
               >
-                <LogOut className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => {
-                setAuthModalMode('signin');
-                setAuthError('');
-                setShowAuthModal(true);
-              }}
-              className="px-3 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f3f4f6] dark:hover:bg-[#30363d] flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <LogIn className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-              <span>Sign In</span>
-            </button>
-          )}
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-90" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.95)]" />
+              </span>
+            )}
+          </button>
 
           <button
             onClick={toggleTheme}
@@ -4254,20 +5450,126 @@ export default function App() {
             <Plus className="w-3.5 h-3.5" />
             <span>New Issue</span>
           </button>
+
+          {isAuthenticated ? (
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              title={authenticatedDisplayName || activeSignedInEmail || 'Account'}
+              aria-label={`Open account drawer for ${authenticatedDisplayName || activeSignedInEmail || 'Account'}`}
+              className="p-0.5 rounded-full border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] hover:border-blue-500 cursor-pointer shrink-0 flex items-center justify-center transition-colors ml-1"
+            >
+              {authenticatedAvatarUrl ? (
+                <img
+                  src={authenticatedAvatarUrl}
+                  alt={authenticatedDisplayName || activeSignedInEmail || 'Account'}
+                  className="w-7 h-7 rounded-full object-cover shrink-0"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <span className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
+                  {(authenticatedDisplayName[0] || activeSignedInEmail[0] || 'N').toUpperCase()}
+                </span>
+              )}
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 ml-1">
+              <button
+                onClick={() => {
+                  setAuthModalMode('signin');
+                  setForgotPasswordStep('request');
+                  setAuthError('');
+                  setAuthSuccessNotice('');
+                  setDispatchedNotice('');
+                  setShowAuthModal(true);
+                }}
+                className="px-3 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f3f4f6] dark:hover:bg-[#30363d] flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <LogIn className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <span>Sign In</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsMobileMenuOpen(true)}
+                aria-label="Open navigation"
+                title="Open navigation"
+                className="p-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#21262d] hover:bg-[#f3f4f6] dark:hover:bg-[#30363d] cursor-pointer shrink-0"
+              >
+                <Menu className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Mobile Compact Actions */}
         <div className="flex md:hidden items-center gap-1.5 shrink-0">
-          {isOffline && (
-            <span
-              role="status"
-              aria-live="polite"
-              title="Network Offline"
-              className="p-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300 flex items-center"
-            >
-              <WifiOff className="w-3.5 h-3.5" />
-            </span>
-          )}
+          <button
+            type="button"
+            role="status"
+            aria-live="polite"
+            aria-label={
+              isOffline || networkPhase === 'offline'
+                ? 'Network Offline'
+                : networkPhase === 'reconnecting'
+                ? 'Network Reconnecting'
+                : 'Network Online'
+            }
+            onClick={() => probeLiveNetworkRef.current?.()}
+            title={
+              isOffline || networkPhase === 'offline'
+                ? 'Offline — tap to re-check'
+                : networkPhase === 'reconnecting'
+                ? 'Reconnecting...'
+                : `Connected${networkLatency !== null ? ` (${networkLatency}ms)` : ''} — tap to re-check`
+            }
+            className={`p-1.5 rounded-md border flex items-center justify-center cursor-pointer shrink-0 ${
+              isOffline || networkPhase === 'offline'
+                ? 'border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400'
+                : networkPhase === 'reconnecting' || networkPhase === 'slow'
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+            }`}
+          >
+            {isOffline || networkPhase === 'offline' ? (
+              <WifiOff className="w-3.5 h-3.5 shrink-0" />
+            ) : networkPhase === 'reconnecting' ? (
+              <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin" />
+            ) : (
+              <Wifi className="w-3.5 h-3.5 shrink-0" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            aria-label="Open Nerve Shark chatbox"
+            title={isSharkChannelActive && activeTab === 'workspace' ? 'Close Nerve Shark' : 'Open Nerve Shark'}
+            onClick={() => {
+              if (activeTab === 'workspace' && isSharkChannelActive) {
+                handleCloseActiveChannel();
+                return;
+              }
+              setActiveTab('workspace');
+              selectedPeerHandleRef.current = 'nerve-shark';
+              setSelectedPeerHandle('nerve-shark');
+              setTimeout(() => chatComposerInputRef.current?.focus(), 0);
+            }}
+            className={`relative p-1.5 rounded-md border flex items-center justify-center cursor-pointer shrink-0 ${
+              isSharkChannelActive && activeTab === 'workspace'
+                ? 'border-blue-600 bg-blue-600 text-white'
+                : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] text-blue-600 dark:text-blue-400'
+            }`}
+          >
+            <PenLine className="w-3.5 h-3.5 shrink-0" />
+            {chatDrafts.some((d) => d.isShark) && (
+              <span
+                aria-hidden="true"
+                className="absolute -top-1 -right-1 flex h-2 w-2"
+              >
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-90" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.95)]" />
+              </span>
+            )}
+          </button>
 
           <button
             type="button"
@@ -4289,248 +5591,254 @@ export default function App() {
             <Terminal className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
           </button>
 
-          <button
-            onClick={() => setShowBugModal(true)}
-            className="px-2.5 py-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-md cursor-pointer whitespace-nowrap"
-          >
-            New Issue
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsMobileMenuOpen(true)}
-            aria-label="Open navigation menu"
-            className="p-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#21262d] cursor-pointer"
-          >
-            <Menu className="w-4 h-4" />
-          </button>
+          {isAuthenticated ? (
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              title={authenticatedDisplayName || activeSignedInEmail || 'Account'}
+              aria-label={`Open account drawer for ${authenticatedDisplayName || activeSignedInEmail || 'Account'}`}
+              className="p-0.5 rounded-full border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] cursor-pointer shrink-0 flex items-center justify-center hover:border-blue-500 transition-colors"
+            >
+              {authenticatedAvatarUrl ? (
+                <img
+                  src={authenticatedAvatarUrl}
+                  alt={authenticatedDisplayName || activeSignedInEmail || 'Account'}
+                  className="w-6 h-6 rounded-full object-cover shrink-0"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-[11px] shrink-0">
+                  {(authenticatedDisplayName[0] || activeSignedInEmail[0] || 'N').toUpperCase()}
+                </span>
+              )}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsMobileMenuOpen(true)}
+              aria-label="Open navigation"
+              className="p-1.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] bg-white dark:bg-[#21262d] cursor-pointer"
+            >
+              <Menu className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </header>
 
       {/* =====================================================================
-          MOBILE SLIDING NAVBAR DRAWER (Portaled to body, no backdrop-blur GPU conflict)
+          FULL-VIEWPORT RIGHT-ALIGNED NAVIGATION DRAWER
+          (Triggered via Avatar when signed in, Drawer icon when signed out)
       ===================================================================== */}
       {isMobileMenuOpen &&
         typeof document !== 'undefined' &&
         createPortal(
-          <div className="fixed inset-0 z-[9998] md:hidden">
-            {/* Clean semi-transparent scrim without backdrop-filter to avoid Android Chrome layer bugs */}
-            <div
-              className="fixed inset-0 z-[9998] bg-black/65"
-              onClick={() => setIsMobileMenuOpen(false)}
-              aria-label="Close navigation overlay"
-            />
-
-            {/* Drawer Panel - fixed to right edge, top z-index, solid surface */}
+          <div className="fixed inset-0 z-[9998]">
             <aside
               role="dialog"
               aria-modal="true"
-              aria-label="Nerve Navigation Menu"
-              className="fixed top-0 right-0 bottom-0 z-[9999] w-72 max-w-[85vw] bg-white dark:bg-[#161b22] text-[#1f2328] dark:text-[#e6edf3] border-l border-[#d0d7de] dark:border-[#30363d] p-4 flex flex-col justify-between shadow-2xl overflow-y-auto"
+              aria-label="Nerve Navigation"
+              className="fixed inset-0 z-[9999] w-full h-full bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] flex flex-col overflow-y-auto"
             >
-            <div className="space-y-4">
-              {/* Header */}
-              <div className="flex items-center justify-between border-b border-[#d0d7de] dark:border-[#30363d] pb-3">
-                <span className="font-bold text-sm tracking-tight font-sans text-[#1f2328] dark:text-[#e6edf3]">
-                  Nerve
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setIsMobileMenuOpen(false)}
-                  aria-label="Close navigation menu"
-                  className="p-1.5 rounded-md text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d] cursor-pointer transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Navigation Links */}
-              <div className="space-y-1">
-                <div className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] px-2 pb-1">
-                  Navigation
-                </div>
-                {[
-                  {
-                    key: 'workspace',
-                    label: 'Workspace',
-                    desc: 'Chat, repositories & code editor',
-                    icon: Layers,
-                  },
-                  {
-                    key: 'incidents',
-                    label: 'Incidents',
-                    desc: 'Issue triage & pull request diffs',
-                    icon: AlertTriangle,
-                  },
-                  {
-                    key: 'integration',
-                    label: 'Integration',
-                    desc: 'API keys, SSH & webhooks',
-                    icon: Globe,
-                  },
-                  {
-                    key: 'privacy',
-                    label: 'Privacy Policy',
-                    desc: 'Data & Google API notice',
-                    icon: Shield,
-                  },
-                  {
-                    key: 'terms',
-                    label: 'Terms & Conditions',
-                    desc: 'Service & acceptable use',
-                    icon: FileText,
-                  },
-                ].map(({ key, label, desc, icon: Icon }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => {
-                      setActiveTab(key as ActiveTab);
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className={`w-full text-left px-3 py-2 rounded-md text-xs transition-colors cursor-pointer flex items-center gap-2.5 ${
-                      activeTab === key
-                        ? 'bg-blue-600 text-white font-semibold'
-                        : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#21262d]'
-                    }`}
-                  >
-                    <Icon className={`w-4 h-4 shrink-0 ${activeTab === key ? 'text-white' : 'text-[#656d76] dark:text-[#8b949e]'}`} />
-                    <div className="min-w-0">
-                      <div className="font-semibold leading-tight">{label}</div>
-                      <div className={`text-[11px] truncate ${activeTab === key ? 'text-blue-100' : 'text-[#656d76] dark:text-[#8b949e]'}`}>
-                        {desc}
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-
-              {/* Codespace Terminal Quick Toggle */}
-              <div className="space-y-1.5 pt-3 border-t border-[#d0d7de] dark:border-[#30363d]">
-                <div className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] px-2">
-                  Tools
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const currentlyOpen = isCodeDrawerOpen && showTerminal;
-                    const nextOpen = activeTab !== 'workspace' ? true : !currentlyOpen;
-                    setActiveTab('workspace');
-                    if (nextOpen) {
-                      setIsCodeDrawerOpen(true);
-                      setShowTerminal(true);
-                    } else {
-                      setShowTerminal(false);
-                    }
-                    setIsMobileMenuOpen(false);
-                    setTimeout(() => {
-                      terminalSectionRef.current?.scrollIntoView({
-                        behavior: 'smooth',
-                        block: 'center',
-                      });
-                      if (nextOpen) {
-                        terminalInputRef.current?.focus();
-                      }
-                    }, 80);
-                  }}
-                  className="w-full px-3 py-2 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] hover:bg-[#e6ebf1] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center justify-between cursor-pointer transition-colors"
-                >
-                  <span className="flex items-center gap-2">
-                    <Terminal className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                    <span className="font-semibold">Terminal</span>
-                  </span>
-                  <span className="text-[11px] text-[#656d76] dark:text-[#8b949e]">
-                    {isCodeDrawerOpen && showTerminal ? 'Open' : 'Closed'}
-                  </span>
-                </button>
-
-                {/* Theme Toggle */}
-                <button
-                  type="button"
-                  onClick={toggleTheme}
-                  className="w-full px-3 py-2 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] hover:bg-[#e6ebf1] dark:hover:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] flex items-center justify-between cursor-pointer transition-colors"
-                >
-                  <span className="flex items-center gap-2">
-                    {isDark ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-blue-600" />}
-                    <span>Appearance</span>
-                  </span>
-                  <span className="text-[11px] text-[#656d76] dark:text-[#8b949e]">
-                    {isDark ? 'Dark' : 'Light'}
-                  </span>
-                </button>
-
-                {/* New Issue */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsMobileMenuOpen(false);
-                    setShowBugModal(true);
-                  }}
-                  className="w-full px-3 py-2 rounded-md text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white text-center cursor-pointer transition-colors"
-                >
-                  New Issue
-                </button>
-              </div>
-            </div>
-
-            {/* Sign In / Profile Section at Bottom */}
-            <div className="pt-3 border-t border-[#d0d7de] dark:border-[#30363d] mt-4">
-              {isAuthenticated ? (
-                <div className="flex items-center justify-between gap-2 p-2 rounded-md bg-[#f6f8fa] dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d]">
-                  <div className="flex items-center gap-2 min-w-0">
-                    {currentUser?.photoURL ? (
+              {/* Top Header Bar: Code icon + User placeholder & info when logged in, Nerve text alone when logged out */}
+              <div className="flex items-center justify-between gap-3 px-4 sm:px-6 h-16 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] shrink-0">
+                {isAuthenticated ? (
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Code2 className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0" />
+                    {authenticatedAvatarUrl ? (
                       <img
-                        src={currentUser.photoURL}
-                        alt={authenticatedDisplayName}
-                        className="w-6 h-6 rounded-full shrink-0"
+                        src={authenticatedAvatarUrl}
+                        alt={authenticatedDisplayName || activeSignedInEmail || 'Account'}
+                        className="w-8 h-8 rounded-full object-cover shrink-0 border border-[#d0d7de] dark:border-[#30363d]"
                         referrerPolicy="no-referrer"
                       />
                     ) : (
-                      <div className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
-                        {(authenticatedDisplayName[0] || 'D').toUpperCase()}
+                      <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0 border border-[#d0d7de] dark:border-[#30363d]">
+                        {(authenticatedDisplayName[0] || activeSignedInEmail[0] || 'N').toUpperCase()}
                       </div>
                     )}
                     <div className="min-w-0">
-                      <div className="text-xs font-semibold truncate leading-tight">
-                        {authenticatedDisplayName}
-                      </div>
-                      <div className="text-[10px] text-[#656d76] dark:text-[#8b949e] truncate font-mono">
-                        {currentUser?.email || emailSession?.email || 'Signed in'}
-                      </div>
+                      {authenticatedDisplayName ? (
+                        <>
+                          <div className="text-sm font-semibold truncate leading-tight text-[#1f2328] dark:text-[#e6edf3]">
+                            {authenticatedDisplayName}
+                          </div>
+                          <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] truncate font-mono">
+                            {currentUser?.email || emailSession?.email || (detectedGitHubHandle ? `@${detectedGitHubHandle}` : '')}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-xs font-mono font-medium truncate text-[#1f2328] dark:text-[#e6edf3]">
+                          {currentUser?.email || emailSession?.email || (detectedGitHubHandle ? `@${detectedGitHubHandle}` : '')}
+                        </div>
+                      )}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsMobileMenuOpen(false);
-                      handleSignOutAll();
-                    }}
-                    title="Sign Out"
-                    className="p-1.5 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer transition-colors"
-                  >
-                    <LogOut className="w-4 h-4" />
-                  </button>
-                </div>
-              ) : (
+                ) : (
+                  <span className="font-bold text-base tracking-tight font-sans text-[#1f2328] dark:text-[#e6edf3]">
+                    Nerve
+                  </span>
+                )}
+
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsMobileMenuOpen(false);
-                    setAuthModalMode('signin');
-                    setAuthError('');
-                    setShowAuthModal(true);
-                  }}
-                  className="w-full py-2 px-3 rounded-md text-xs font-semibold bg-[#1f2328] hover:bg-[#32383f] text-white dark:bg-[#f0f6fc] dark:hover:bg-[#d0d7de] dark:text-[#0d1117] flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  aria-label="Close navigation"
+                  className="p-2 rounded-md text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer transition-colors shrink-0"
                 >
-                  <LogIn className="w-3.5 h-3.5" />
-                  <span>Sign In</span>
+                  <X className="w-5 h-5" />
                 </button>
-              )}
-            </div>
-          </aside>
-        </div>,
-        document.body
-      )}
+              </div>
+
+              {/* Full-View Body with All Options Left-Aligned & Plain */}
+              <div className="flex-1 flex flex-col justify-between px-4 sm:px-6 py-5">
+                <div className="w-full max-w-xs space-y-5">
+                  {/* Primary Navigation Options (Left-aligned, single-line icon + name, plain, bold ash active tab) */}
+                  <div className="space-y-1">
+                    {isAuthenticated && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMobileMenuOpen(false);
+                          setShowProfileModal(true);
+                        }}
+                        className="w-full px-1 py-2.5 min-h-[44px] text-sm font-normal text-[#1f2328] dark:text-[#f0f6fc] cursor-pointer flex items-center justify-start gap-3 text-left transition-colors"
+                      >
+                        <UserIcon className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
+                        <span>Profile</span>
+                      </button>
+                    )}
+                    {[
+                      { key: 'workspace', label: 'Workspace', icon: Layers },
+                      { key: 'incidents', label: 'Incidents', icon: AlertTriangle },
+                      { key: 'integration', label: 'Integration', icon: Globe },
+                      { key: 'privacy', label: 'Privacy Policy', icon: Shield },
+                      { key: 'terms', label: 'Terms & Conditions', icon: FileText },
+                    ].map(({ key, label, icon: Icon }) => {
+                      const isCurrent = activeTab === key;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => {
+                            setActiveTab(key as ActiveTab);
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`w-full px-1 py-2.5 min-h-[44px] text-sm cursor-pointer flex items-center justify-start gap-3 text-left transition-colors ${
+                            isCurrent
+                              ? 'font-bold text-[#6e7781] dark:text-[#8b949e]'
+                              : 'font-normal text-[#1f2328] dark:text-[#f0f6fc]'
+                          }`}
+                        >
+                          <Icon
+                            strokeWidth={isCurrent ? 2.5 : 1.75}
+                            className={`w-4 h-4 shrink-0 ${
+                              isCurrent
+                                ? 'text-[#6e7781] dark:text-[#8b949e]'
+                                : 'text-[#1f2328] dark:text-[#f0f6fc]'
+                            }`}
+                          />
+                          <span>{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Action Options (Terminal, Appearance, New Issue — plain, left-aligned, no boxes or hover fills) */}
+                  <div className="space-y-1 pt-4 border-t border-[#d0d7de] dark:border-[#30363d]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const currentlyOpen = isCodeDrawerOpen && showTerminal;
+                        const nextOpen = activeTab !== 'workspace' ? true : !currentlyOpen;
+                        setActiveTab('workspace');
+                        if (nextOpen) {
+                          setIsCodeDrawerOpen(true);
+                          setShowTerminal(true);
+                        } else {
+                          setShowTerminal(false);
+                        }
+                        setIsMobileMenuOpen(false);
+                        setTimeout(() => {
+                          terminalSectionRef.current?.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'center',
+                          });
+                          if (nextOpen) {
+                            terminalInputRef.current?.focus();
+                          }
+                        }, 80);
+                      }}
+                      className="w-full px-1 py-2.5 min-h-[44px] text-sm font-normal text-[#1f2328] dark:text-[#f0f6fc] flex items-center justify-start gap-3 text-left cursor-pointer transition-colors"
+                    >
+                      <Terminal className="w-4 h-4 shrink-0 text-blue-600 dark:text-blue-400" />
+                      <span>Terminal</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={toggleTheme}
+                      className="w-full px-1 py-2.5 min-h-[44px] text-sm font-normal text-[#1f2328] dark:text-[#f0f6fc] flex items-center justify-start gap-3 text-left cursor-pointer transition-colors"
+                    >
+                      {isDark ? (
+                        <Sun className="w-4 h-4 shrink-0 text-amber-400" />
+                      ) : (
+                        <Moon className="w-4 h-4 shrink-0 text-blue-600" />
+                      )}
+                      <span>Appearance</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMenuOpen(false);
+                        setShowBugModal(true);
+                      }}
+                      className="w-full px-1 py-2.5 min-h-[44px] text-sm font-normal text-[#1f2328] dark:text-[#f0f6fc] flex items-center justify-start gap-3 text-left cursor-pointer transition-colors"
+                    >
+                      <Plus className="w-4 h-4 shrink-0 text-[#1f2328] dark:text-[#f0f6fc]" />
+                      <span>New Issue</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Bottom Action (Plain left-aligned Log out in red, or plain Sign In) */}
+                <div className="w-full max-w-xs pt-4 mt-6 border-t border-[#d0d7de] dark:border-[#30363d]">
+                  {isAuthenticated ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMenuOpen(false);
+                        handleSignOutAll();
+                      }}
+                      className="w-full px-1 py-2.5 min-h-[44px] text-sm font-normal text-red-600 dark:text-red-400 flex items-center justify-start gap-3 text-left cursor-pointer transition-opacity hover:opacity-80"
+                    >
+                      <LogOut className="w-4 h-4 shrink-0" />
+                      <span>Log out</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMenuOpen(false);
+                        setAuthModalMode('signin');
+                        setForgotPasswordStep('request');
+                        setAuthError('');
+                        setAuthSuccessNotice('');
+                        setDispatchedNotice('');
+                        setShowAuthModal(true);
+                      }}
+                      className="w-full px-1 py-2.5 min-h-[44px] text-sm font-normal text-[#1f2328] dark:text-[#f0f6fc] flex items-center justify-start gap-3 text-left cursor-pointer transition-colors"
+                    >
+                      <LogIn className="w-4 h-4 shrink-0 text-[#1f2328] dark:text-[#f0f6fc]" />
+                      <span>Sign In</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </aside>
+          </div>,
+          document.body
+        )}
 
       {/* Offline Queue Banner when items are waiting in LocalStorage */}
       {offlineQueue.length > 0 && (
@@ -4595,7 +5903,47 @@ export default function App() {
             reports={incidentReports}
             selectedTicketId={selectedIncidentTicketId}
             onSelectTicket={(ticketId) => setSelectedIncidentTicketId(ticketId)}
-            onRunTestForIncident={async () => {
+            onCancelWorkflow={() => setSelectedIncidentTicketId('')}
+            onDiscardIncident={(ticketId) => {
+              setIncidentReports((prev) => prev.filter((r) => r.ticketId !== ticketId));
+              setSelectedIncidentTicketId((curr) => (curr === ticketId ? '' : curr));
+            }}
+            onDeleteIncident={(ticketId) => {
+              setIncidentReports((prev) => prev.filter((r) => r.ticketId !== ticketId));
+              setSelectedIncidentTicketId((curr) => (curr === ticketId ? '' : curr));
+            }}
+            onDeleteActivityLog={(ticketId, logIndex) => {
+              setIncidentReports((prev) =>
+                prev.map((rep) =>
+                  rep.ticketId === ticketId
+                    ? {
+                        ...rep,
+                        systemLogsReport: rep.systemLogsReport.filter((_, idx) => idx !== logIndex),
+                      }
+                    : rep
+                )
+              );
+            }}
+            onRunTestForIncident={async (ticketId) => {
+              setIncidentReports((prev) =>
+                prev.map((rep) =>
+                  rep.ticketId === ticketId && rep.status === 'Investigating'
+                    ? {
+                        ...rep,
+                        status: 'Testing Fix',
+                        systemLogsReport: [
+                          ...rep.systemLogsReport,
+                          {
+                            time: new Date().toLocaleTimeString(),
+                            level: 'INFO',
+                            event: 'TEST_SUITE_STARTED',
+                            details: `Investigation complete; running verification suite for ${ticketId}`,
+                          },
+                        ],
+                      }
+                    : rep
+                )
+              );
               await handleRunCodespaceCommand('npm test');
               setActiveTab('workspace');
             }}
@@ -4629,14 +5977,14 @@ export default function App() {
       )}
 
       {activeTab === 'workspace' && (
-        <main className="flex-1 flex flex-col lg:flex-row min-h-[calc(100vh-56px)]">
+        <main className="flex-1 flex flex-col lg:flex-row min-h-[calc(100vh-56px)] overflow-x-hidden">
           {/* =================================================================
               LEFT SIDEBAR: GitHub-Style Navigation (Search, Nerve Shark, Peers, Repos)
           ================================================================= */}
           <aside className="w-full lg:w-64 xl:w-72 shrink-0 bg-[#f6f8fa] dark:bg-[#161b22] border-b lg:border-b-0 lg:border-r border-[#d0d7de] dark:border-[#30363d] flex flex-col justify-between">
             <div className="p-3.5 space-y-5 overflow-y-auto">
               {/* Search Repos & Peers */}
-              <div className="relative space-y-2">
+              <div ref={githubSearchContainerRef} className="relative space-y-2">
                 <form onSubmit={(e) => handleExecuteGitHubSearch(e)} className="space-y-1.5">
                   <div className="relative">
                     <Search className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -4644,18 +5992,50 @@ export default function App() {
                       ref={githubSearchInputRef}
                       type="text"
                       value={githubSearchQuery}
-                      onChange={(e) => setGithubSearchQuery(e.target.value)}
+                      onChange={(e) => {
+                        const nextVal = e.target.value;
+                        setGithubSearchQuery(nextVal);
+                        // Clearing the search query immediately clears unadded developers while keeping valid search history viewable
+                        if (!nextVal.trim()) {
+                          setGithubSearchResults({ repositories: [], users: [] });
+                          const cleanedHistory = githubSearchHistory.filter((entry) =>
+                            isSearchHistoryEntryAllowed(entry, peers)
+                          );
+                          setGithubSearchHistory(cleanedHistory);
+                          setShowSearchDropdown(cleanedHistory.length > 0);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          handleClearGitHubSearchInput(false);
+                        }
+                      }}
                       onFocus={() => {
                         if (
-                          githubSearchResults.repositories.length > 0 ||
-                          githubSearchResults.users.length > 0
+                          githubSearchQuery.trim() &&
+                          (githubSearchResults.repositories.length > 0 ||
+                            githubSearchResults.users.length > 0)
                         ) {
+                          setShowSearchDropdown(true);
+                        } else if (!githubSearchQuery.trim() && visibleSearchHistory.length > 0) {
                           setShowSearchDropdown(true);
                         }
                       }}
                       placeholder="Search repo or @peer..."
-                      className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      className="w-full pl-8 pr-7 py-1.5 text-xs rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />
+                    {githubSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => handleClearGitHubSearchInput(true)}
+                        title="Clear search"
+                        aria-label="Clear search"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-[#656d76] hover:text-[#1f2328] dark:text-[#8b949e] dark:hover:text-[#e6edf3] cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
                   <div className="flex items-center justify-between gap-1.5">
                     <div className="flex items-center gap-0.5 bg-white dark:bg-[#0d1117] p-0.5 rounded-md border border-[#d0d7de] dark:border-[#30363d] text-[11px]">
@@ -4689,178 +6069,245 @@ export default function App() {
                   </div>
                 </form>
 
-                {/* Search Results Popover */}
+                {/* Search Results / Recent Searches Popover */}
                 {showSearchDropdown && (
                   <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] shadow-lg p-2.5 space-y-2.5 z-20">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold text-[#1f2328] dark:text-[#e6edf3]">
-                        Search Results
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setShowSearchDropdown(false)}
-                        className="p-0.5 rounded text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    {(githubSearchType === 'all' || githubSearchType === 'repositories') && (
-                      <div className="space-y-1.5">
-                        <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
-                          Repositories ({githubSearchResults.repositories.length})
-                        </div>
-                        {githubSearchResults.repositories.length === 0 ? (
-                          <div className="text-xs text-[#656d76] py-1">No repositories found.</div>
-                        ) : (
-                          githubSearchResults.repositories.slice(0, 4).map((repoItem) => {
-                            const alreadyTracked = Boolean(repositories[repoItem.fullName]);
-                            return (
-                              <div
-                                key={repoItem.fullName}
-                                className="p-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between gap-2"
+                    {!githubSearchQuery.trim() ? (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                            <History className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e]" />
+                            <span>Recent Searches</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            {visibleSearchHistory.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={handleClearAllSearchHistory}
+                                className="text-[11px] font-medium text-[#656d76] hover:text-red-600 dark:text-[#8b949e] dark:hover:text-red-400 cursor-pointer transition-colors"
                               >
-                                <div className="min-w-0">
-                                  <div className="text-xs font-mono font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
-                                    {repoItem.fullName}
-                                  </div>
-                                  <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] truncate">
-                                    {repoItem.language} · {repoItem.stars.toLocaleString()} ★
+                                Clear
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setShowSearchDropdown(false)}
+                              aria-label="Close recent searches"
+                              className="p-0.5 rounded text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {visibleSearchHistory.length === 0 ? (
+                          <div className="text-xs text-[#656d76] dark:text-[#8b949e] py-1">
+                            No recent searches yet.
+                          </div>
+                        ) : (
+                          <div className="max-h-52 overflow-y-auto space-y-1 pr-0.5">
+                            {visibleSearchHistory.map((item) => {
+                              const isAddedPeerItem =
+                                item.isDeveloperQuery ||
+                                item.type === 'users' ||
+                                item.query.startsWith('@');
+                              return (
+                                <div
+                                  key={`${item.type}:${item.query.toLowerCase()}`}
+                                  className="group flex items-center justify-between gap-2 px-2 py-1.5 rounded-md border border-transparent hover:border-[#d0d7de] dark:hover:border-[#30363d] hover:bg-[#f6f8fa] dark:hover:bg-[#161b22] transition-colors"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setGithubSearchQuery(item.query);
+                                      setGithubSearchType(item.type);
+                                      handleExecuteGitHubSearch(undefined, item.type, item.query);
+                                    }}
+                                    className="flex-1 min-w-0 flex items-center gap-2 text-left cursor-pointer"
+                                  >
+                                    {isAddedPeerItem ? (
+                                      <Users className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                    ) : (
+                                      <FolderGit2 className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] shrink-0" />
+                                    )}
+                                    <span className="text-xs font-mono text-[#1f2328] dark:text-[#e6edf3] truncate">
+                                      {item.query}
+                                    </span>
+                                  </button>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <span className="text-[10px] text-[#656d76] dark:text-[#8b949e]">
+                                      {isAddedPeerItem
+                                        ? 'Peer'
+                                        : item.type === 'repositories'
+                                        ? 'Repo'
+                                        : 'All'}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveSearchHistoryEntry(item)}
+                                      title="Remove from history"
+                                      aria-label={`Remove ${item.query} from search history`}
+                                      className="p-0.5 rounded text-[#656d76] opacity-70 hover:opacity-100 hover:text-red-600 dark:text-[#8b949e] dark:hover:text-red-400 cursor-pointer"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
                                   </div>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => handleTrackExternalRepository(repoItem)}
-                                  className={`px-2 py-1 rounded text-[11px] font-medium shrink-0 cursor-pointer ${
-                                    alreadyTracked
-                                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                                      : 'bg-blue-600 hover:bg-blue-500 text-white'
-                                  }`}
-                                >
-                                  {alreadyTracked ? 'Open' : 'Track'}
-                                </button>
-                              </div>
-                            );
-                          })
+                              );
+                            })}
+                          </div>
                         )}
-                      </div>
-                    )}
-
-                    {(githubSearchType === 'all' || githubSearchType === 'users') && (
-                      <div className="space-y-1.5">
-                        <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
-                          Developers ({githubSearchResults.users.length})
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                            Search Results
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowSearchDropdown(false);
+                              if (!githubSearchQuery.trim()) {
+                                setGithubSearchResults({ repositories: [], users: [] });
+                              }
+                            }}
+                            aria-label="Close search results"
+                            className="p-0.5 rounded text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         </div>
-                        {githubSearchResults.users.length === 0 ? (
-                          <div className="text-xs text-[#656d76] py-1">No users found.</div>
-                        ) : (
-                          githubSearchResults.users.slice(0, 4).map((userItem) => {
-                            const alreadyPeer = peers.some(
-                              (p) => p.handle.toLowerCase() === userItem.login.toLowerCase()
-                            );
-                            return (
-                              <div
-                                key={userItem.login}
-                                className="p-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between gap-2"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <img
-                                    src={userItem.avatarUrl}
-                                    alt={userItem.login}
-                                    className="w-5 h-5 rounded-full shrink-0"
-                                    referrerPolicy="no-referrer"
-                                  />
-                                  <span className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
-                                    @{userItem.login}
-                                  </span>
-                                </div>
-                                <button
-                                  type="button"
-                                  disabled={isAddingPeer}
-                                  onClick={() => handleTrackSearchedPeer(userItem.login)}
-                                  className={`px-2 py-1 rounded text-[11px] font-medium shrink-0 cursor-pointer ${
-                                    alreadyPeer
-                                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                                      : 'bg-blue-600 hover:bg-blue-500 text-white'
-                                  }`}
-                                >
-                                  {alreadyPeer ? 'Open' : 'Add'}
-                                </button>
+
+                        {(githubSearchType === 'all' || githubSearchType === 'repositories') && (
+                          <div className="space-y-1.5">
+                            <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                              Repositories ({githubSearchResults.repositories.length})
+                            </div>
+                            {githubSearchResults.repositories.length === 0 ? (
+                              <div className="text-xs text-[#656d76] py-1">No repositories found.</div>
+                            ) : (
+                              <div className="max-h-60 overflow-y-auto space-y-1.5 pr-0.5">
+                                {githubSearchResults.repositories.map((repoItem) => {
+                                  const alreadyTracked = Boolean(repositories[repoItem.fullName]);
+                                  return (
+                                    <div
+                                      key={repoItem.fullName}
+                                      className="p-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between gap-2"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="text-xs font-mono font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                                          {repoItem.fullName}
+                                        </div>
+                                        <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] truncate">
+                                          {repoItem.language} · {repoItem.stars.toLocaleString()} ★
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleTrackExternalRepository(repoItem)}
+                                        className={`px-2 py-1 rounded text-[11px] font-medium shrink-0 cursor-pointer ${
+                                          alreadyTracked
+                                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                            : 'bg-blue-600 hover:bg-blue-500 text-white'
+                                        }`}
+                                      >
+                                        {alreadyTracked ? 'Open' : 'Track'}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
                               </div>
-                            );
-                          })
+                            )}
+                          </div>
                         )}
-                      </div>
+
+                        {(githubSearchType === 'all' || githubSearchType === 'users') && (
+                          <div className="space-y-1.5">
+                            <div className="text-[11px] font-medium text-[#656d76] dark:text-[#8b949e]">
+                              Developers ({githubSearchResults.users.length})
+                            </div>
+                            {githubSearchResults.users.length === 0 ? (
+                              <div className="text-xs text-[#656d76] py-1">No users found.</div>
+                            ) : (
+                              <div className="max-h-40 overflow-y-auto space-y-1.5 pr-0.5">
+                                {githubSearchResults.users.map((userItem) => {
+                                  const alreadyPeer = peers.some(
+                                    (p) => p.handle.toLowerCase() === userItem.login.toLowerCase()
+                                  );
+                                  return (
+                                    <div
+                                      key={userItem.login}
+                                      className="p-2 rounded-md border border-[#d0d7de] dark:border-[#30363d] flex items-center justify-between gap-2"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <img
+                                          src={userItem.avatarUrl}
+                                          alt={userItem.login}
+                                          className="w-5 h-5 rounded-full shrink-0"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                        <span className="text-xs font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
+                                          @{userItem.login}
+                                        </span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        disabled={isAddingPeer}
+                                        onClick={() => handleTrackSearchedPeer(userItem.login)}
+                                        className={`px-2 py-1 rounded text-[11px] font-medium shrink-0 cursor-pointer ${
+                                          alreadyPeer
+                                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                            : 'bg-blue-600 hover:bg-blue-500 text-white'
+                                        }`}
+                                      >
+                                        {alreadyPeer ? 'Open' : 'Add'}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
               </div>
 
-              {/* Assistant Section: Nerve Shark Chatbox */}
-              <div className="space-y-1.5">
-                <div className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] px-1">
-                  Assistant
-                </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedPeerHandle('nerve-shark');
-                      setTimeout(() => chatComposerInputRef.current?.focus(), 0);
-                    }}
-                    className={`flex-1 flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-colors cursor-pointer ${
-                      isSharkChannelActive
-                        ? 'bg-blue-600 text-white font-semibold'
-                        : 'bg-white dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500'
-                    }`}
-                  >
-                    <Sparkles
-                      className={`w-4 h-4 shrink-0 ${
-                        isSharkChannelActive ? 'text-white' : 'text-blue-600 dark:text-blue-400'
-                      }`}
-                    />
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold truncate">Nerve Shark</div>
-                      <div
-                        className={`text-[11px] truncate ${
-                          isSharkChannelActive
-                            ? 'text-blue-100'
-                            : 'text-[#656d76] dark:text-[#8b949e]'
-                        }`}
-                      >
-                        App guide &amp; code chatbox
-                      </div>
-                    </div>
-                  </button>
-                  {isSharkThinking && (
-                    <button
-                      type="button"
-                      onClick={handleCancelNerveShark}
-                      title="Cancel Nerve Shark request"
-                      className="p-2 rounded-md bg-red-600 hover:bg-red-500 text-white cursor-pointer shrink-0"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
               {/* Direct Messages Section */}
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between px-1">
+                <div className="flex items-center justify-between px-1 gap-1.5">
                   <span className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e]">
                     Direct Messages ({peers.length})
                   </span>
-                  {activeSignedInEmail && (
-                    <button
-                      type="button"
-                      onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
-                      className="text-[11px] font-mono text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                      title={`View @users connected to ${activeSignedInEmail}`}
-                    >
-                      @users
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {chatDrafts.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowDraftsMenu(true)}
+                        title={`${chatDrafts.length} saved draft(s) waiting for attention`}
+                        className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      >
+                        <span className="relative flex h-2 w-2" aria-hidden="true">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-85" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.95)]" />
+                        </span>
+                        <span>Drafts ({chatDrafts.length})</span>
+                      </button>
+                    )}
+                    {activeSignedInEmail && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenConnectedUsersModal(activeSignedInEmail)}
+                        className="text-[11px] font-mono text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                        title={`View @users connected to ${activeSignedInEmail}`}
+                      >
+                        @users
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="space-y-1">
@@ -4877,11 +6324,17 @@ export default function App() {
                       >
                         <button
                           type="button"
-                          onClick={() =>
-                            isSelected
-                              ? handleCloseActiveChannel()
-                              : setSelectedPeerHandle(peer.handle)
-                          }
+                          onClick={() => {
+                            if (isSelected) {
+                              handleCloseActiveChannel();
+                              return;
+                            }
+                            if (isSharkChannelActive) {
+                              archiveAndClearChannel('nerve-shark', true);
+                            }
+                            selectedPeerHandleRef.current = peer.handle;
+                            setSelectedPeerHandle(peer.handle);
+                          }}
                           className="flex items-center gap-2 min-w-0 flex-1 text-left cursor-pointer"
                         >
                           {peer.avatarUrl ? (
@@ -4942,47 +6395,137 @@ export default function App() {
               </div>
 
               {/* Repositories Section */}
-              <div className="space-y-1.5">
-                <div className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] px-1">
-                  Repositories ({Object.keys(repositories).length})
-                </div>
-                {Object.keys(repositories).length === 0 ? (
-                  <p className="text-xs text-[#656d76] dark:text-[#8b949e] px-1 leading-relaxed">
-                    Search above to track a GitHub, GitLab, or Bitbucket repository.
-                  </p>
-                ) : (
-                  <div className="space-y-1">
-                    {Object.values(repositories).map((repoObj) => {
-                      const isActiveRepo = activeRepo?.repo === repoObj.repo;
-                      return (
-                        <button
-                          key={repoObj.repo}
-                          type="button"
-                          onClick={() => {
-                            const firstFile = Object.keys(repoObj.files)[0];
-                            if (firstFile) {
-                              handleNavigateDeepLink(
-                                repoObj.repo,
-                                firstFile,
-                                repoObj.files[firstFile].bugLine || 1
+              {(() => {
+                const allRepos = Object.values(repositories);
+                const normalizedRepoFilter = repoListFilterQuery.trim().toLowerCase();
+                const filteredRepos = normalizedRepoFilter
+                  ? allRepos.filter((repoObj) => {
+                      const target = `${repoObj.repo} ${repoObj.branch || ''} ${
+                        repoObj.description || ''
+                      }`.toLowerCase();
+                      return target.includes(normalizedRepoFilter);
+                    })
+                  : allRepos;
+
+                return (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[11px] font-semibold text-[#656d76] dark:text-[#8b949e] tabular-nums">
+                        Repositories (
+                        {normalizedRepoFilter
+                          ? `${filteredRepos.length}/${allRepos.length}`
+                          : allRepos.length}
+                        )
+                      </span>
+                    </div>
+                    {allRepos.length === 0 ? (
+                      <p className="text-xs text-[#656d76] dark:text-[#8b949e] px-1 leading-relaxed">
+                        Search above to track a GitHub, GitLab, or Bitbucket repository.
+                      </p>
+                    ) : (
+                      <>
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={repoListFilterQuery}
+                            onChange={(e) => setRepoListFilterQuery(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape' && repoListFilterQuery) {
+                                e.preventDefault();
+                                setRepoListFilterQuery('');
+                              } else if (e.key === 'Enter' && filteredRepos.length > 0) {
+                                e.preventDefault();
+                                const topRepo = filteredRepos[0];
+                                const firstFile = Object.keys(topRepo.files)[0];
+                                if (firstFile) {
+                                  void handleSelectRepoFile(
+                                    topRepo.repo,
+                                    firstFile,
+                                    topRepo.files[firstFile].bugLine || 1
+                                  );
+                                }
+                                setIsCodeDrawerOpen(true);
+                              }
+                            }}
+                            placeholder="Search repo..."
+                            aria-label="Search repositories"
+                            className="w-full pl-8 pr-7 py-1.5 text-xs rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          />
+                          {repoListFilterQuery && (
+                            <button
+                              type="button"
+                              onClick={() => setRepoListFilterQuery('')}
+                              title="Clear repository filter"
+                              aria-label="Clear repository filter"
+                              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-[#656d76] hover:text-[#1f2328] dark:text-[#8b949e] dark:hover:text-[#e6edf3] cursor-pointer"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+
+                        {filteredRepos.length === 0 ? (
+                          <div className="px-2 py-2 rounded-md border border-dashed border-[#d0d7de] dark:border-[#30363d] text-xs text-[#656d76] dark:text-[#8b949e] flex items-center justify-between gap-2">
+                            <span className="truncate">No matching repositories</span>
+                            <button
+                              type="button"
+                              onClick={() => setRepoListFilterQuery('')}
+                              className="text-blue-600 dark:text-blue-400 hover:underline font-medium shrink-0 cursor-pointer"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            {filteredRepos.map((repoObj) => {
+                              const isActiveRepo = activeRepo?.repo === repoObj.repo;
+                              return (
+                                <div
+                                  key={repoObj.repo}
+                                  className={`group flex items-center justify-between gap-1 px-2 py-1.5 rounded-md text-xs transition-colors ${
+                                    isActiveRepo
+                                      ? 'bg-white dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d] font-semibold text-[#1f2328] dark:text-[#e6edf3]'
+                                      : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5 border border-transparent'
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const firstFile = Object.keys(repoObj.files)[0];
+                                      if (firstFile) {
+                                        void handleSelectRepoFile(
+                                          repoObj.repo,
+                                          firstFile,
+                                          repoObj.files[firstFile].bugLine || 1
+                                        );
+                                      }
+                                      setIsCodeDrawerOpen(true);
+                                    }}
+                                    className="flex items-center gap-2 min-w-0 flex-1 text-left cursor-pointer"
+                                  >
+                                    <FolderGit2 className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] shrink-0" />
+                                    <span className="font-mono truncate">{repoObj.repo}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title={`Close ${repoObj.repo} (keep user active)`}
+                                    aria-label={`Close repository ${repoObj.repo}`}
+                                    onClick={(e) => handleCloseTrackedRepository(repoObj.repo, e)}
+                                    className="p-0.5 rounded text-[#656d76] opacity-75 hover:opacity-100 hover:text-red-500 dark:text-[#8b949e] dark:hover:text-red-400 cursor-pointer shrink-0"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
                               );
-                            }
-                            setIsCodeDrawerOpen(true);
-                          }}
-                          className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-left transition-colors cursor-pointer ${
-                            isActiveRepo
-                              ? 'bg-white dark:bg-[#0d1117] border border-[#d0d7de] dark:border-[#30363d] font-semibold text-[#1f2328] dark:text-[#e6edf3]'
-                              : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5 border border-transparent'
-                          }`}
-                        >
-                          <FolderGit2 className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] shrink-0" />
-                          <span className="font-mono truncate">{repoObj.repo}</span>
-                        </button>
-                      );
-                    })}
+                            })}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </div>
 
             {/* Sidebar Bottom Controls */}
@@ -5002,7 +6545,13 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setIsCodeDrawerOpen(!isCodeDrawerOpen)}
-                className="px-2.5 py-1.5 rounded-md text-xs font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                aria-expanded={isCodeDrawerOpen}
+                aria-controls="workspace-code-terminal-drawer"
+                className={`px-2.5 py-1.5 rounded-md text-xs font-medium border flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                  isCodeDrawerOpen
+                    ? 'border-blue-500/50 bg-blue-500/10 text-blue-700 dark:text-blue-300'
+                    : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5'
+                }`}
                 title="Toggle Code & Terminal Drawer"
               >
                 {isCodeDrawerOpen ? (
@@ -5025,7 +6574,11 @@ export default function App() {
                 <div className="max-w-3xl mx-auto space-y-6">
                   <div className="space-y-1.5">
                     <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[#1f2328] dark:text-[#e6edf3]">
-                      {isAuthenticated ? `Welcome back, ${authenticatedDisplayName}` : 'Welcome to Nerve'}
+                      {isAuthenticated
+                        ? authenticatedDisplayName
+                          ? `Welcome back, ${authenticatedDisplayName}`
+                          : 'Welcome back'
+                        : 'Welcome to Nerve'}
                     </h1>
                     <p className="text-sm text-[#656d76] dark:text-[#8b949e] max-w-xl">
                       Ask Nerve Shark how anything works, track a repository to inspect code and run tests, or message teammates over end-to-end encrypted P2P chat.
@@ -5042,7 +6595,7 @@ export default function App() {
                       }}
                       className="text-left p-4 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] hover:border-blue-500 transition-colors cursor-pointer space-y-2"
                     >
-                      <Sparkles className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                      <PenLine className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                       <div className="space-y-0.5">
                         <div className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
                           Ask Nerve Shark
@@ -5282,10 +6835,10 @@ export default function App() {
             ) : (
               <div className="flex-1 flex flex-col min-h-0">
                 {/* Active Channel Header */}
-                <div className="px-4 py-2.5 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex items-center justify-between gap-3">
+                <div className="relative px-4 py-2.5 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     {isSharkChannelActive ? (
-                      <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                      <PenLine className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
                     ) : (
                       <MessageSquare className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                     )}
@@ -5301,8 +6854,8 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <div className="relative hidden sm:block w-48 lg:w-56">
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="relative hidden sm:block w-40 lg:w-48">
                       <Search className="w-3.5 h-3.5 text-[#656d76] dark:text-[#8b949e] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                       <input
                         type="text"
@@ -5333,10 +6886,86 @@ export default function App() {
                         {filteredCurrentMessages.length}/{currentMessages.length}
                       </span>
                     )}
+
+                    {/* Drafts Menu Trigger with Shining Dot Notification */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowDraftsMenu((prev) => !prev);
+                          setConfirmClearChatAll(false);
+                        }}
+                        aria-expanded={showDraftsMenu}
+                        title={
+                          chatDrafts.length > 0
+                            ? `${chatDrafts.length} draft(s) saved — click to review or resume`
+                            : 'No saved drafts'
+                        }
+                        className={`relative px-2.5 py-1 text-xs font-medium rounded-md border flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                          showDraftsMenu
+                            ? 'border-blue-500 bg-blue-600 text-white'
+                            : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500'
+                        }`}
+                      >
+                        <FileText className="w-3.5 h-3.5 shrink-0" />
+                        <span>Drafts</span>
+                        {chatDrafts.length > 0 && (
+                          <span className="font-mono text-[11px] tabular-nums">
+                            ({chatDrafts.length})
+                          </span>
+                        )}
+                        {chatDrafts.length > 0 && (
+                          <span
+                            aria-label="Unattended drafts notification"
+                            className="absolute -top-1 -right-1 flex h-2.5 w-2.5"
+                          >
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-90" />
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.95)]" />
+                          </span>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* General Delete All Entries Button (leaves chat open & clean to start afresh) */}
+                    {currentMessages.length > 0 && (
+                      confirmClearChatAll ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={handleClearActiveChatEntries}
+                            className="px-2 py-1 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 rounded-md whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            Delete All
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmClearChatAll(false)}
+                            className="px-2 py-1 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] rounded-md whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowDraftsMenu(false);
+                            setConfirmClearChatAll(true);
+                          }}
+                          title="Delete all entries in this chat and start fresh"
+                          aria-label="Delete all entries in this chat"
+                          className="px-2.5 py-1 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] hover:text-red-600 dark:hover:text-red-400 hover:border-red-500/50 border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] rounded-md flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Clear All</span>
+                        </button>
+                      )
+                    )}
+
                     <button
                       type="button"
                       onClick={handleCloseActiveChannel}
-                      title={isSharkChannelActive ? 'Close Nerve Shark (or type /exit)' : 'Close chat (or type /exit)'}
+                      title={isSharkChannelActive ? 'Close Nerve Shark (moves entries to Drafts)' : 'Close chat (moves entries to Drafts)'}
                       aria-label={isSharkChannelActive ? 'Close Nerve Shark' : 'Close chat'}
                       className="px-2.5 py-1 text-xs font-medium text-[#1f2328] dark:text-[#e6edf3] hover:text-red-600 dark:hover:text-red-400 border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] rounded-md flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
                     >
@@ -5352,10 +6981,6 @@ export default function App() {
                     isSharkChannelActive ? (
                       <div className="max-w-xl mx-auto py-8 space-y-5">
                         <div className="space-y-1.5">
-                          <div className="flex items-center gap-2 text-[#1f2328] dark:text-[#e6edf3]">
-                            <Sparkles className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                            <h2 className="text-base font-bold">Ask Nerve Shark anything</h2>
-                          </div>
                           <p className="text-xs sm:text-sm text-[#656d76] dark:text-[#8b949e] leading-relaxed">
                             Use me as an everyday chatbox to learn how Nerve works, or ask me to review files, debug stack traces, and generate code patches.
                           </p>
@@ -5411,7 +7036,7 @@ export default function App() {
                         <div className="flex items-center justify-between text-xs text-[#656d76] dark:text-[#8b949e] gap-2">
                           <div className="flex items-center gap-1.5 min-w-0">
                             {msg.senderRole === 'copilot' && (
-                              <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                              <PenLine className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
                             )}
                             <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3] truncate">
                               {msg.senderName}
@@ -5422,18 +7047,22 @@ export default function App() {
                               {msg.timestamp}
                               {msg.edited ? ' · edited' : ''}
                             </span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleStartEditMessage(msg);
-                              }}
-                              title="Edit message"
-                              aria-label="Edit message"
-                              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
+                            {msg.senderRole !== 'copilot' &&
+                              msg.senderHandle !== 'nerve-shark' &&
+                              (!isSharkChannelActive || msg.senderRole === 'self') && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleStartEditMessage(msg);
+                                  }}
+                                  title={isSharkChannelActive ? 'Edit question' : 'Edit message'}
+                                  aria-label={isSharkChannelActive ? 'Edit question' : 'Edit message'}
+                                  className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             <button
                               type="button"
                               onClick={(e) => {
@@ -5507,6 +7136,22 @@ export default function App() {
                               </button>
                             </div>
                           </div>
+                        ) : msg.senderRole === 'copilot' ? (
+                          <MessageContentWithEditableCode
+                            text={msg.text}
+                            renderProse={(prose) =>
+                              renderHighlightedMessageText(prose, trimmedChatSearch)
+                            }
+                            onUpdateText={(nextText) => {
+                              if (!activePeerKey) return;
+                              setMessagesByPeer((prev) => ({
+                                ...prev,
+                                [activePeerKey]: (prev[activePeerKey] || []).map((item) =>
+                                  item.id === msg.id ? { ...item, text: nextText } : item
+                                ),
+                              }));
+                            }}
+                          />
                         ) : (
                           <p className="text-xs sm:text-sm text-[#1f2328] dark:text-[#e6edf3] leading-relaxed whitespace-pre-wrap">
                             {renderHighlightedMessageText(msg.text, trimmedChatSearch)}
@@ -5768,19 +7413,39 @@ export default function App() {
                         )}
 
                         {msg.copilotPatch && msg.copilotPatch.suggestedPatch && (
-                          <div className="rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] p-3 space-y-2">
-                            <pre className="text-xs font-mono text-emerald-700 dark:text-emerald-400 overflow-x-auto leading-relaxed">
-                              {msg.copilotPatch.suggestedPatch}
-                            </pre>
-                            <button
-                              onClick={() => handleApplyPatchToCodespace(msg.id)}
-                              className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-md cursor-pointer"
-                            >
-                              {msg.copilotPatch.applied || patchApplied
-                                ? 'Patch Applied'
-                                : 'Apply Suggested Fix'}
-                            </button>
-                          </div>
+                          <EditableCodeBlock
+                            code={msg.copilotPatch.suggestedPatch}
+                            language={activeFile ? detectCodeLanguage(activeFile.path, activeFile.language).label : 'Patch'}
+                            onSave={(nextCode) => {
+                              if (!activePeerKey) return;
+                              setMessagesByPeer((prev) => ({
+                                ...prev,
+                                [activePeerKey]: (prev[activePeerKey] || []).map((item) =>
+                                  item.id === msg.id && item.copilotPatch
+                                    ? {
+                                        ...item,
+                                        copilotPatch: {
+                                          ...item.copilotPatch,
+                                          suggestedPatch: nextCode,
+                                          applied: false,
+                                        },
+                                      }
+                                    : item
+                                ),
+                              }));
+                            }}
+                            leftFooterAction={
+                              <button
+                                type="button"
+                                onClick={() => handleApplyPatchToCodespace(msg.id)}
+                                className="px-2.5 py-1 text-[11px] font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-md cursor-pointer whitespace-nowrap"
+                              >
+                                {msg.copilotPatch.applied || patchApplied
+                                  ? 'Patch Applied'
+                                  : 'Apply Suggested Fix'}
+                              </button>
+                            }
+                          />
                         )}
 
                         {msg.senderRole === 'copilot' &&
@@ -5823,9 +7488,9 @@ export default function App() {
               </div>
             )}
 
-            {/* Composer */}
-            <div className="p-3.5 border-t border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2">
-              {(canOpenP2PChannel || isSharkChannelActive) && (
+            {/* Composer (only shown when Nerve Shark or an active peer channel is open) */}
+            {(canOpenP2PChannel || isSharkChannelActive) && (
+              <div className="p-3.5 border-t border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2">
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
                   {(() => {
                     const lastMsg = currentMessages[currentMessages.length - 1];
@@ -5867,71 +7532,108 @@ export default function App() {
                     ));
                   })()}
                 </div>
-              )}
 
-              <form onSubmit={(e) => handleSendMessage(e)} className="flex items-center gap-2">
-                <input
-                  ref={chatComposerInputRef}
-                  type="text"
-                  disabled={!canOpenP2PChannel && !isSharkChannelActive}
-                  value={composerText}
-                  onChange={(e) => setComposerText(e.target.value)}
-                  placeholder={
-                    isSharkChannelActive
-                      ? 'Ask Nerve Shark how Nerve works, paste code, or type /exit to close...'
-                      : canOpenP2PChannel
-                      ? 'Write a message, repo#branch/file:L42, @shark, or /bug...'
-                      : 'Select Nerve Shark or a peer in the sidebar to start chatting'
-                  }
-                  className="flex-1 px-3.5 py-2 text-xs sm:text-sm rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                {isSharkThinking ? (
-                  <button
-                    type="button"
-                    onClick={handleCancelNerveShark}
-                    className="px-3.5 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                    <span>Cancel</span>
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={(!canOpenP2PChannel && !isSharkChannelActive) || !composerText.trim()}
-                    className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>{isOffline ? 'Queue' : 'Send'}</span>
-                  </button>
-                )}
-              </form>
-            </div>
+                <form onSubmit={(e) => handleSendMessage(e)} className="flex items-center gap-2">
+                  <input
+                    ref={chatComposerInputRef}
+                    type="text"
+                    value={composerText}
+                    onChange={(e) => setComposerText(e.target.value)}
+                    placeholder={
+                      isSharkChannelActive
+                        ? 'Ask Nerve Shark how Nerve works, paste code, or type /exit to close...'
+                        : 'Write a message, repo#branch/file:L42, @shark, or /bug...'
+                    }
+                    className="flex-1 px-3.5 py-2 text-xs sm:text-sm rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] placeholder:text-[#656d76] dark:placeholder:text-[#8b949e] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  {isSharkThinking ? (
+                    <button
+                      type="button"
+                      onClick={handleCancelNerveShark}
+                      className="px-3.5 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-500 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Cancel</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={!composerText.trim()}
+                      className="px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-md flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{isOffline ? 'Queue' : 'Send'}</span>
+                    </button>
+                  )}
+                </form>
+              </div>
+            )}
           </section>
 
           {/* =================================================================
               RIGHT DRAWER: Code Viewer & Shared Codespace Terminal
           ================================================================= */}
-          {isCodeDrawerOpen && (
-            <section className="w-full lg:w-[440px] bg-white dark:bg-[#0d1117] border-t lg:border-t-0 lg:border-l border-[#d0d7de] dark:border-[#30363d] flex flex-col justify-between shrink-0">
+          <div
+            id="workspace-code-terminal-drawer"
+            aria-hidden={!isCodeDrawerOpen}
+            inert={!isCodeDrawerOpen ? true : undefined}
+            className={`shrink-0 transition-[max-height,width,opacity,border-color] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
+              isCodeDrawerOpen
+                ? 'w-full lg:w-[440px] max-h-[2400px] lg:max-h-none opacity-100 border-t lg:border-t-0 lg:border-l border-[#d0d7de] dark:border-[#30363d] overflow-x-hidden lg:overflow-y-visible'
+                : 'w-full lg:w-0 max-h-0 lg:max-h-none opacity-0 border-t-0 lg:border-l-0 border-transparent overflow-hidden pointer-events-none select-none'
+            }`}
+          >
+            <section
+              className={`w-full lg:w-[440px] h-full bg-white dark:bg-[#0d1117] flex flex-col justify-between transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
+                isCodeDrawerOpen
+                  ? 'translate-y-0 lg:translate-x-0 opacity-100'
+                  : 'translate-y-3 lg:translate-y-0 lg:translate-x-8 opacity-0'
+              }`}
+            >
               {/* File Header & Repo/File Switcher */}
-              <div className="p-3.5 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2">
+              <div className="p-3 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2.5">
+                {/* Row 1: Active File Path (hover-to-copy) + Primary Actions */}
                 <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-bold text-[#1f2328] dark:text-[#e6edf3] font-mono truncate">
-                        {activeFile ? activeFile.path : 'No repository tracked'}
-                      </span>
-                      {activeFile && (
-                        <span className="text-[11px] font-mono text-blue-600 dark:text-blue-400 shrink-0">
+                  <div className="min-w-0 flex-1">
+                    {activeFile ? (
+                      <div className="group flex items-center gap-1.5 min-w-0">
+                        <button
+                          type="button"
+                          onClick={handleCopyActiveFilePath}
+                          title={`Click to copy full path: ${
+                            activeRepo ? `${activeRepo.repo}/${activeFile.path}` : activeFile.path
+                          }`}
+                          className="flex items-center gap-1.5 min-w-0 text-left rounded px-1 -mx-1 py-0.5 hover:bg-black/5 dark:hover:bg-white/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-500 transition-colors cursor-pointer"
+                        >
+                          <span className="text-xs font-bold text-[#1f2328] dark:text-[#e6edf3] font-mono truncate">
+                            {activeFile.path}
+                          </span>
+                          <span
+                            className={`inline-flex items-center gap-1 text-[11px] font-mono shrink-0 transition-opacity duration-150 ${
+                              copiedFilePathFeedback
+                                ? 'opacity-100 text-emerald-600 dark:text-emerald-400'
+                                : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-[#656d76] dark:text-[#8b949e]'
+                            }`}
+                          >
+                            {copiedFilePathFeedback ? (
+                              <>
+                                <Check className="w-3 h-3" />
+                                <span>Copied</span>
+                              </>
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                          </span>
+                        </button>
+                        <span className="text-[11px] font-mono text-blue-600 dark:text-blue-400 shrink-0 whitespace-nowrap">
                           · {detectCodeLanguage(activeFile.path, activeFile.language).label}
                         </span>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] font-mono truncate">
-                      {activeRepo
-                        ? `${activeRepo.repo} · Line ${highlightedLine}`
-                        : 'Search any repository in the sidebar to inspect files'}
-                    </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs font-bold text-[#1f2328] dark:text-[#e6edf3] font-mono truncate">
+                        No repository tracked
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -5945,29 +7647,31 @@ export default function App() {
                             ? `Share ${activeFile.path}:L${highlightedLine} snippet to chat`
                             : 'Select a mutual peer channel to share file snippets'
                         }
-                        className="px-2.5 py-1 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white hover:border-blue-500 dark:hover:border-blue-400 disabled:opacity-40 flex items-center gap-1 cursor-pointer"
+                        className="px-2 py-1 rounded-md text-[11px] font-medium border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500 dark:hover:border-blue-400 disabled:opacity-40 flex items-center gap-1 cursor-pointer whitespace-nowrap"
                       >
                         {sharedFileFeedback ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-500" />
+                          <Check className="w-3 h-3 text-emerald-500" />
                         ) : (
-                          <Share2 className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                          <Share2 className="w-3 h-3 text-blue-600 dark:text-blue-400" />
                         )}
-                        <span>{sharedFileFeedback ? 'Shared' : 'Share File'}</span>
+                        <span>{sharedFileFeedback ? 'Shared' : 'Share'}</span>
                       </button>
                     )}
                     {activeFile?.patchedLines && (
                       <button
+                        type="button"
                         onClick={() => setPatchApplied(!patchApplied)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                        className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap ${
                           patchApplied
                             ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                            : 'bg-blue-600 text-white'
+                            : 'bg-blue-600 hover:bg-blue-500 text-white'
                         }`}
                       >
                         {patchApplied ? 'Fix Applied' : 'Apply Fix'}
                       </button>
                     )}
                     <button
+                      type="button"
                       onClick={() => {
                         const nextState = !showTerminal;
                         setShowTerminal(nextState);
@@ -5982,49 +7686,130 @@ export default function App() {
                           }, 80);
                         }
                       }}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1 cursor-pointer ${
+                      className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors flex items-center gap-1 cursor-pointer whitespace-nowrap ${
                         showTerminal
                           ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300 font-semibold'
-                          : 'border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white hover:border-neutral-400'
+                          : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:border-neutral-400'
                       }`}
                     >
-                      <Terminal className="w-3.5 h-3.5" />
+                      <Terminal className="w-3 h-3" />
                       <span>Terminal</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Quick Repo Switcher & Collapsible File Explorer Toggle */}
+                {/* Row 2: Dedicated Repository Metadata Bar (No overlap with Share File) */}
+                {activeRepo ? (
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#d0d7de]/70 dark:border-[#30363d]/70 text-[11px] font-mono">
+                    <div className="flex items-center gap-1.5 min-w-0 text-[#656d76] dark:text-[#8b949e]">
+                      <FolderGit2 className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                        {activeRepo.repo}
+                      </span>
+                      <span className="shrink-0 tabular-nums">· L{highlightedLine}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <a
+                        href={getGitHubRepoUrl(activeRepo)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={`Open ${activeRepo.repo} on GitHub`}
+                        aria-label={`Open ${activeRepo.repo} on GitHub`}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap"
+                      >
+                        <ExternalLink className="w-2.5 h-2.5" />
+                        <span>GitHub</span>
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleRepoStar(activeRepo.repo)}
+                        aria-pressed={Boolean(starredRepos[activeRepo.repo])}
+                        title={`${(
+                          (activeRepo.stars ?? 0) + (starredRepos[activeRepo.repo] ? 1 : 0)
+                        ).toLocaleString()} GitHub Stars — click to ${
+                          starredRepos[activeRepo.repo] ? 'unstar' : 'star'
+                        }`}
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border transition-colors cursor-pointer whitespace-nowrap ${
+                          starredRepos[activeRepo.repo]
+                            ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                            : 'border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:border-amber-500/60'
+                        }`}
+                      >
+                        <Star
+                          className={`w-2.5 h-2.5 ${
+                            starredRepos[activeRepo.repo]
+                              ? 'text-amber-500 fill-amber-500'
+                              : 'text-amber-500'
+                          }`}
+                        />
+                        <span className="tabular-nums font-semibold">
+                          {formatStarCount(
+                            (activeRepo.stars ?? 0) + (starredRepos[activeRepo.repo] ? 1 : 0)
+                          )}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-[#656d76] dark:text-[#8b949e] font-mono truncate">
+                    Search any repository in the sidebar to inspect files
+                  </div>
+                )}
+
+                {/* Row 3: Quick Repo Switcher (with inline Close) & Collapsible File Explorer Toggle */}
                 {Object.keys(repositories).length > 0 && (
                   <div className="flex items-center justify-between gap-2 pt-0.5">
-                    <div className="flex items-center gap-1.5 overflow-x-auto">
-                      {Object.values(repositories).map((repoObj) => (
-                        <button
-                          key={repoObj.repo}
-                          onClick={() => {
-                            const firstFile = Object.keys(repoObj.files)[0];
-                            handleNavigateDeepLink(
-                              repoObj.repo,
-                              firstFile,
-                              repoObj.files[firstFile].bugLine || 1
-                            );
-                          }}
-                          className={`px-2 py-0.5 rounded-md text-[11px] font-mono transition-colors cursor-pointer whitespace-nowrap border ${
-                            activeRepo?.repo === repoObj.repo
-                              ? 'bg-blue-600 text-white border-blue-600 font-semibold'
-                              : 'bg-white dark:bg-black text-black dark:text-white border-neutral-200 dark:border-neutral-800'
-                          }`}
-                        >
-                          {repoObj.repo.split('/')[1] || repoObj.repo}
-                        </button>
-                      ))}
+                    <div className="flex items-center gap-1.5 overflow-x-auto min-w-0">
+                      {Object.values(repositories).map((repoObj) => {
+                        const isSelectedRepo = activeRepo?.repo === repoObj.repo;
+                        return (
+                          <div
+                            key={repoObj.repo}
+                            className={`inline-flex items-center rounded-md border text-[11px] font-mono transition-colors shrink-0 ${
+                              isSelectedRepo
+                                ? 'bg-blue-600 text-white border-blue-600 font-semibold'
+                                : 'bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] border-[#d0d7de] dark:border-[#30363d]'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const firstFile = Object.keys(repoObj.files)[0];
+                                if (firstFile) {
+                                  void handleSelectRepoFile(
+                                    repoObj.repo,
+                                    firstFile,
+                                    repoObj.files[firstFile].bugLine || 1
+                                  );
+                                }
+                              }}
+                              className="pl-2 pr-1 py-0.5 cursor-pointer whitespace-nowrap"
+                            >
+                              {repoObj.repo.split('/')[1] || repoObj.repo}
+                            </button>
+                            <button
+                              type="button"
+                              title={`Close ${repoObj.repo}`}
+                              aria-label={`Close ${repoObj.repo}`}
+                              onClick={(e) => handleCloseTrackedRepository(repoObj.repo, e)}
+                              className={`pr-1.5 pl-0.5 py-0.5 cursor-pointer ${
+                                isSelectedRepo
+                                  ? 'text-white/80 hover:text-white'
+                                  : 'text-[#656d76] hover:text-red-500'
+                              }`}
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
 
                     {activeRepo && (
                       <button
                         type="button"
                         onClick={() => setShowFileExplorer((prev) => !prev)}
-                        className="px-2 py-0.5 rounded-md text-[11px] font-mono border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white flex items-center gap-1 shrink-0 cursor-pointer"
+                        className="px-2 py-0.5 rounded-md text-[11px] font-mono border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] hover:border-blue-500 flex items-center gap-1 shrink-0 cursor-pointer whitespace-nowrap"
                       >
                         {showFileExplorer ? (
                           <ChevronDown className="w-3 h-3 text-blue-600 dark:text-blue-400" />
@@ -6039,7 +7824,16 @@ export default function App() {
 
                 {/* Collapsible Repository File Explorer Tree */}
                 {activeRepo && showFileExplorer && (
-                  <div className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black p-2 max-h-40 overflow-y-auto space-y-0.5 font-mono text-xs">
+                  <div className="rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] overflow-hidden font-mono text-xs">
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] text-[11px] text-[#656d76] dark:text-[#8b949e]">
+                      <span className="font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                        Explorer · {activeRepo.branch}
+                      </span>
+                      <span className="tabular-nums">
+                        {Object.keys(activeRepo.files).length} files
+                      </span>
+                    </div>
+                    <div className="p-2 max-h-48 overflow-y-auto space-y-0.5">
                     {(() => {
                       const fileTree = buildRepositoryFileTree(Object.keys(activeRepo.files));
                       const renderNodes = (
@@ -6060,12 +7854,12 @@ export default function App() {
                                     }))
                                   }
                                   style={{ paddingLeft: `${depth * 12 + 6}px` }}
-                                  className="w-full py-1 pr-2 rounded flex items-center gap-1.5 text-left text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer"
+                                  className="w-full py-1 pr-2 rounded flex items-center gap-1.5 text-left text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#161b22] cursor-pointer"
                                 >
                                   {isCollapsed ? (
-                                    <ChevronRight className="w-3 h-3 text-neutral-500 shrink-0" />
+                                    <ChevronRight className="w-3 h-3 text-[#656d76] shrink-0" />
                                   ) : (
-                                    <ChevronDown className="w-3 h-3 text-neutral-500 shrink-0" />
+                                    <ChevronDown className="w-3 h-3 text-[#656d76] shrink-0" />
                                   )}
                                   {isCollapsed ? (
                                     <Folder className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
@@ -6093,14 +7887,17 @@ export default function App() {
                               key={node.fullPath}
                               type="button"
                               onClick={() => {
-                                setActiveFilePath(node.fullPath);
-                                setHighlightedLine(fileMeta?.bugLine || 1);
+                                void handleSelectRepoFile(
+                                  activeRepo.repo,
+                                  node.fullPath,
+                                  fileMeta?.bugLine || 1
+                                );
                               }}
                               style={{ paddingLeft: `${depth * 12 + 20}px` }}
                               className={`w-full py-1 pr-2 rounded flex items-center justify-between gap-2 text-left transition-colors cursor-pointer ${
                                 isCurrentFile
                                   ? 'bg-blue-600 text-white font-semibold'
-                                  : 'text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900'
+                                  : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-[#f6f8fa] dark:hover:bg-[#161b22]'
                               }`}
                             >
                               <span className="flex items-center gap-1.5 truncate">
@@ -6128,6 +7925,7 @@ export default function App() {
 
                       return renderNodes(fileTree);
                     })()}
+                    </div>
                   </div>
                 )}
               </div>
@@ -6544,8 +8342,16 @@ export default function App() {
                           </button>
                         </div>
                         {terminalRenameError && (
-                          <div className="text-[11px] text-red-600 dark:text-red-400">
-                            {terminalRenameError}
+                          <div className="text-[11px] text-red-600 dark:text-red-400 flex items-center justify-between gap-2">
+                            <span>{terminalRenameError}</span>
+                            <button
+                              type="button"
+                              onClick={() => setTerminalRenameError('')}
+                              aria-label="Dismiss warning"
+                              className="p-0.5 shrink-0 text-current cursor-pointer"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
                           </div>
                         )}
                       </form>
@@ -6795,11 +8601,47 @@ export default function App() {
                                 Grid
                               </button>
 
+                              {/* Terminal Command History & Bookmarks Toggle */}
+                              <button
+                                type="button"
+                                title="Command History & Bookmarks"
+                                aria-expanded={showTerminalHistoryPanel}
+                                onClick={() => {
+                                  setShowTerminalHistoryPanel((prev) => {
+                                    const next = !prev;
+                                    if (next) setShowTerminalSettings(false);
+                                    return next;
+                                  });
+                                }}
+                                className={`px-1.5 py-0.5 rounded text-[11px] font-mono border flex items-center gap-1 shrink-0 cursor-pointer transition-colors ${
+                                  showTerminalHistoryPanel
+                                    ? 'bg-blue-600 text-white border-blue-600 font-semibold'
+                                    : 'border-neutral-300 dark:border-neutral-700 bg-white dark:bg-black text-black dark:text-white hover:border-blue-500'
+                                }`}
+                              >
+                                <Bookmark
+                                  className={`w-3 h-3 ${
+                                    bookmarkedTerminalCommands.length > 0 && !showTerminalHistoryPanel
+                                      ? 'text-amber-500 fill-amber-500'
+                                      : ''
+                                  }`}
+                                />
+                                <span className="tabular-nums">
+                                  {bookmarkedTerminalCommands.length}
+                                </span>
+                              </button>
+
                               {/* Terminal Settings Toggle (Macros & Appearance Color Schemes) */}
                               <button
                                 type="button"
                                 title="Terminal Settings (Macros & ANSI Color Schemes)"
-                                onClick={() => setShowTerminalSettings((prev) => !prev)}
+                                onClick={() => {
+                                  setShowTerminalSettings((prev) => {
+                                    const next = !prev;
+                                    if (next) setShowTerminalHistoryPanel(false);
+                                    return next;
+                                  });
+                                }}
                                 className={`p-1 rounded border shrink-0 cursor-pointer ${
                                   showTerminalSettings
                                     ? 'bg-blue-600 text-white border-blue-600'
@@ -6986,6 +8828,171 @@ export default function App() {
                             >
                               Clear Terminal
                             </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Command History & Bookmarks Panel */}
+                    {showTerminalHistoryPanel && (() => {
+                      const uniqueHistory = Array.from(
+                        new Set([...terminalCommandHistory].reverse().map((c) => c.trim()).filter(Boolean))
+                      );
+                      const filterTerm = terminalHistorySearch.trim().toLowerCase();
+                      const filteredHistory = filterTerm
+                        ? uniqueHistory.filter((cmd) => cmd.toLowerCase().includes(filterTerm))
+                        : uniqueHistory;
+                      const filteredBookmarks = filterTerm
+                        ? bookmarkedTerminalCommands.filter((cmd) =>
+                            cmd.toLowerCase().includes(filterTerm)
+                          )
+                        : bookmarkedTerminalCommands;
+                      const activeList =
+                        terminalHistoryPanelTab === 'bookmarks' ? filteredBookmarks : filteredHistory;
+
+                      return (
+                        <div className="p-2.5 rounded-lg border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] space-y-2 text-xs font-mono">
+                          <div className="flex items-center justify-between gap-2 border-b border-[#d0d7de] dark:border-[#30363d] pb-1.5">
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setTerminalHistoryPanelTab('history')}
+                                className={`px-2 py-0.5 rounded text-[11px] flex items-center gap-1 cursor-pointer transition-colors ${
+                                  terminalHistoryPanelTab === 'history'
+                                    ? 'bg-blue-600 text-white font-semibold'
+                                    : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5'
+                                }`}
+                              >
+                                <History className="w-3 h-3" />
+                                <span>History</span>
+                                <span className="tabular-nums opacity-75">
+                                  ({uniqueHistory.length})
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setTerminalHistoryPanelTab('bookmarks')}
+                                className={`px-2 py-0.5 rounded text-[11px] flex items-center gap-1 cursor-pointer transition-colors ${
+                                  terminalHistoryPanelTab === 'bookmarks'
+                                    ? 'bg-blue-600 text-white font-semibold'
+                                    : 'text-[#1f2328] dark:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/5'
+                                }`}
+                              >
+                                <Bookmark className="w-3 h-3" />
+                                <span>Bookmarks</span>
+                                <span className="tabular-nums opacity-75">
+                                  ({bookmarkedTerminalCommands.length})
+                                </span>
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              aria-label="Close command history and bookmarks panel"
+                              onClick={() => setShowTerminalHistoryPanel(false)}
+                              className="p-0.5 rounded text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          <div className="relative">
+                            <Search className="w-3 h-3 text-[#656d76] dark:text-[#8b949e] absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                            <input
+                              type="text"
+                              value={terminalHistorySearch}
+                              onChange={(e) => setTerminalHistorySearch(e.target.value)}
+                              placeholder={
+                                terminalHistoryPanelTab === 'bookmarks'
+                                  ? 'Filter bookmarked commands...'
+                                  : 'Filter command history...'
+                              }
+                              aria-label="Filter terminal commands"
+                              className="w-full pl-6 pr-6 py-1 text-[11px] font-mono rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] text-[#1f2328] dark:text-[#e6edf3] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            />
+                            {terminalHistorySearch && (
+                              <button
+                                type="button"
+                                aria-label="Clear filter"
+                                onClick={() => setTerminalHistorySearch('')}
+                                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] cursor-pointer"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="space-y-1 max-h-36 overflow-y-auto">
+                            {activeList.length === 0 ? (
+                              <div className="py-3 px-2 text-center text-[11px] text-[#656d76] dark:text-[#8b949e]">
+                                {terminalHistoryPanelTab === 'bookmarks'
+                                  ? filterTerm
+                                    ? 'No bookmarked commands match your filter.'
+                                    : 'No bookmarked commands yet. Star any command in History for one-click execution.'
+                                  : filterTerm
+                                  ? 'No commands in history match your filter.'
+                                  : 'Run a shell command below to populate history.'}
+                              </div>
+                            ) : (
+                              activeList.map((cmd) => {
+                                const isBookmarked = bookmarkedTerminalCommands.includes(cmd);
+                                return (
+                                  <div
+                                    key={cmd}
+                                    className="flex items-center justify-between gap-1.5 px-2 py-1 rounded border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#0d1117] hover:border-blue-500/60 transition-colors"
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => handleToggleBookmarkCommand(cmd)}
+                                      aria-pressed={isBookmarked}
+                                      title={
+                                        isBookmarked
+                                          ? `Remove "${cmd}" from bookmarks`
+                                          : `Bookmark "${cmd}" for quick execution`
+                                      }
+                                      className={`p-0.5 rounded shrink-0 cursor-pointer transition-colors ${
+                                        isBookmarked
+                                          ? 'text-amber-500 hover:text-amber-600'
+                                          : 'text-[#656d76] dark:text-[#8b949e] hover:text-amber-500'
+                                      }`}
+                                    >
+                                      <Bookmark
+                                        className={`w-3.5 h-3.5 ${
+                                          isBookmarked ? 'fill-current' : ''
+                                        }`}
+                                      />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      title={`Load "${cmd}" into terminal input`}
+                                      onClick={() => {
+                                        setTerminalInput(cmd);
+                                        setTerminalHistoryIndex(-1);
+                                        terminalInputRef.current?.focus();
+                                      }}
+                                      className="flex-1 min-w-0 text-left truncate text-[11px] text-[#1f2328] dark:text-[#e6edf3] hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
+                                    >
+                                      {cmd}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isRunningTerminal}
+                                      title={`Run "${cmd}" immediately`}
+                                      onClick={() =>
+                                        handleRunCodespaceCommand(
+                                          cmd,
+                                          activeTerminalInstance.id,
+                                          activeTerminalInstance.activeSubTab
+                                        )
+                                      }
+                                      className="px-1.5 py-0.5 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-[10px] font-semibold inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors"
+                                    >
+                                      <Play className="w-2.5 h-2.5 fill-current" />
+                                      <span>Run</span>
+                                    </button>
+                                  </div>
+                                );
+                              })
+                            )}
                           </div>
                         </div>
                       );
@@ -7916,26 +9923,103 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Quick One-Click Bookmarked Commands Bar */}
+                    {bookmarkedTerminalCommands.length > 0 && (
+                      <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTerminalHistoryPanelTab('bookmarks');
+                            setShowTerminalHistoryPanel((prev) => !prev);
+                            setShowTerminalSettings(false);
+                          }}
+                          title="Manage bookmarked commands"
+                          className="text-[10px] font-mono text-[#656d76] dark:text-[#8b949e] hover:text-[#1f2328] dark:hover:text-[#e6edf3] inline-flex items-center gap-1 shrink-0 cursor-pointer"
+                        >
+                          <Bookmark className="w-3 h-3 text-amber-500 fill-amber-500" />
+                          <span>Saved</span>
+                        </button>
+                        {bookmarkedTerminalCommands.map((cmd) => (
+                          <div
+                            key={cmd}
+                            className="inline-flex items-center rounded border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#161b22] shrink-0 overflow-hidden"
+                          >
+                            <button
+                              type="button"
+                              disabled={isRunningTerminal}
+                              title={`Run "${cmd}" in ${activeTerminalInstance.name}`}
+                              onClick={() =>
+                                handleRunCodespaceCommand(
+                                  cmd,
+                                  activeTerminalInstance.id,
+                                  activeTerminalInstance.activeSubTab
+                                )
+                              }
+                              className="px-2 py-0.5 text-[11px] font-mono text-[#1f2328] dark:text-[#e6edf3] hover:bg-blue-600 hover:text-white disabled:opacity-40 inline-flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap"
+                            >
+                              <Play className="w-2.5 h-2.5 fill-current opacity-80 shrink-0" />
+                              <span className="max-w-[160px] truncate">{cmd}</span>
+                            </button>
+                            <button
+                              type="button"
+                              title={`Remove "${cmd}" bookmark`}
+                              aria-label={`Remove bookmark ${cmd}`}
+                              onClick={() => handleToggleBookmarkCommand(cmd)}
+                              className="px-1 py-0.5 text-[#656d76] dark:text-[#8b949e] hover:text-red-500 hover:bg-black/5 dark:hover:bg-white/5 border-l border-[#d0d7de] dark:border-[#30363d] cursor-pointer transition-colors"
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Lightweight Command Suggestion Engine from terminalCommandHistory */}
                     {commandSuggestions.length > 0 && (
                       <div className="flex flex-wrap items-center gap-1 px-2 py-1 rounded border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-black text-[11px] font-mono">
                         <span className="text-[10px] text-neutral-500 mr-1">
                           Suggestions (Tab):
                         </span>
-                        {commandSuggestions.map((suggestion) => (
-                          <button
-                            key={suggestion}
-                            type="button"
-                            onClick={() => {
-                              setTerminalInput(suggestion);
-                              setTerminalHistoryIndex(-1);
-                              terminalInputRef.current?.focus();
-                            }}
-                            className="px-2 py-0.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-black text-black dark:text-white hover:border-blue-500 cursor-pointer"
-                          >
-                            {suggestion}
-                          </button>
-                        ))}
+                        {commandSuggestions.map((suggestion) => {
+                          const isBookmarked = bookmarkedTerminalCommands.includes(suggestion);
+                          return (
+                            <div
+                              key={suggestion}
+                              className="inline-flex items-center rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-black overflow-hidden"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTerminalInput(suggestion);
+                                  setTerminalHistoryIndex(-1);
+                                  terminalInputRef.current?.focus();
+                                }}
+                                className="px-2 py-0.5 text-black dark:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 cursor-pointer"
+                              >
+                                {suggestion}
+                              </button>
+                              <button
+                                type="button"
+                                aria-pressed={isBookmarked}
+                                title={
+                                  isBookmarked
+                                    ? `Remove "${suggestion}" from bookmarks`
+                                    : `Bookmark "${suggestion}"`
+                                }
+                                onClick={() => handleToggleBookmarkCommand(suggestion)}
+                                className={`px-1 py-0.5 border-l border-neutral-200 dark:border-neutral-800 cursor-pointer transition-colors ${
+                                  isBookmarked
+                                    ? 'text-amber-500 hover:text-amber-600'
+                                    : 'text-neutral-400 hover:text-amber-500'
+                                }`}
+                              >
+                                <Bookmark
+                                  className={`w-2.5 h-2.5 ${isBookmarked ? 'fill-current' : ''}`}
+                                />
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 
@@ -7950,27 +10034,54 @@ export default function App() {
                           );
                         }
                       }}
-                      className="flex items-center gap-2 pt-0.5"
+                      className="flex items-center gap-1.5 pt-0.5"
                     >
-                      <span className="text-xs font-mono text-black dark:text-white">
+                      <span className="text-xs font-mono text-black dark:text-white shrink-0">
                         {activeTerminalInstance.name}$
                       </span>
-                      <input
-                        ref={terminalInputRef}
-                        type="text"
-                        value={terminalInput}
-                        onChange={(e) => {
-                          setTerminalInput(e.target.value);
-                          setTerminalHistoryIndex(-1);
-                        }}
-                        onKeyDown={handleTerminalInputKeyDown}
-                        aria-label="Codespace terminal command input"
-                        className="flex-1 bg-white dark:bg-black border border-neutral-300 dark:border-neutral-800 rounded px-2.5 py-1 text-xs font-mono text-black dark:text-white focus:outline-none"
-                      />
+                      <div className="relative flex-1 min-w-0">
+                        <input
+                          ref={terminalInputRef}
+                          type="text"
+                          value={terminalInput}
+                          onChange={(e) => {
+                            setTerminalInput(e.target.value);
+                            setTerminalHistoryIndex(-1);
+                          }}
+                          onKeyDown={handleTerminalInputKeyDown}
+                          aria-label="Codespace terminal command input"
+                          className="w-full bg-white dark:bg-black border border-neutral-300 dark:border-neutral-800 rounded pl-2.5 pr-7 py-1 text-xs font-mono text-black dark:text-white focus:outline-none focus:border-blue-500"
+                        />
+                        {terminalInput.trim() && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleBookmarkCommand(terminalInput)}
+                            aria-pressed={bookmarkedTerminalCommands.includes(terminalInput.trim())}
+                            title={
+                              bookmarkedTerminalCommands.includes(terminalInput.trim())
+                                ? 'Remove current command from bookmarks'
+                                : 'Bookmark current command'
+                            }
+                            className={`absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded cursor-pointer transition-colors ${
+                              bookmarkedTerminalCommands.includes(terminalInput.trim())
+                                ? 'text-amber-500 hover:text-amber-600'
+                                : 'text-neutral-400 hover:text-amber-500'
+                            }`}
+                          >
+                            <Bookmark
+                              className={`w-3.5 h-3.5 ${
+                                bookmarkedTerminalCommands.includes(terminalInput.trim())
+                                  ? 'fill-current'
+                                  : ''
+                              }`}
+                            />
+                          </button>
+                        )}
+                      </div>
                       <button
                         type="submit"
                         disabled={isRunningTerminal}
-                        className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded cursor-pointer"
+                        className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded cursor-pointer shrink-0"
                       >
                         Exec
                       </button>
@@ -7979,7 +10090,7 @@ export default function App() {
                 )}
               </div>
             </section>
-          )}
+          </div>
         </main>
       )}
 
@@ -7998,7 +10109,9 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setAuthModalMode('signin');
+                    setForgotPasswordStep('request');
                     setAuthError('');
+                    setAuthSuccessNotice('');
                     setDispatchedNotice('');
                   }}
                   className={`px-3 py-1 rounded-md font-semibold cursor-pointer ${
@@ -8015,6 +10128,7 @@ export default function App() {
                     setAuthModalMode('signup');
                     setSignUpStep('credentials');
                     setAuthError('');
+                    setAuthSuccessNotice('');
                     setDispatchedNotice('');
                   }}
                   className={`px-3 py-1 rounded-md font-semibold cursor-pointer ${
@@ -8029,6 +10143,7 @@ export default function App() {
 
               <button
                 onClick={() => setShowAuthModal(false)}
+                aria-label="Close sign in dialog"
                 className="p-1 rounded-lg text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -8036,8 +10151,25 @@ export default function App() {
             </div>
 
             {authModalMode === 'signin' ? (
-              /* SIGN IN MODE: Direct Email & Password + GitHub & Google Auto Sign-In */
+              /* SIGN IN MODE: Direct Email & Password + Forgot Password + OAuth */
               <form onSubmit={handleEmailPasswordSignIn} className="space-y-2.5 text-xs">
+                {authSuccessNotice && (
+                  <div className="p-2.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                      <span>{authSuccessNotice}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAuthSuccessNotice('')}
+                      aria-label="Dismiss notification"
+                      className="p-0.5 shrink-0 text-current cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 <div className="space-y-1">
                   <label className="font-medium text-black dark:text-white block">Email</label>
                   <div className="relative">
@@ -8054,7 +10186,22 @@ export default function App() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="font-medium text-black dark:text-white block">Password</label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="font-medium text-black dark:text-white block">Password</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthModalMode('forgot');
+                        setForgotPasswordStep('request');
+                        setAuthError('');
+                        setAuthSuccessNotice('');
+                        setDispatchedNotice('');
+                      }}
+                      className="text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
                   <div className="relative">
                     <KeyRound className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
@@ -8083,6 +10230,7 @@ export default function App() {
                       setAuthModalMode('signup');
                       setSignUpStep('credentials');
                       setAuthError('');
+                      setAuthSuccessNotice('');
                     }}
                     className="text-blue-600 dark:text-blue-400 hover:underline font-medium cursor-pointer"
                   >
@@ -8090,6 +10238,157 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            ) : authModalMode === 'forgot' ? (
+              forgotPasswordStep === 'request' ? (
+                /* FORGOT PASSWORD STEP 1: Request Reset Link & 6-Digit Code */
+                <form onSubmit={handleRequestPasswordReset} className="space-y-2.5 text-xs">
+                  <div className="space-y-0.5">
+                    <div className="text-sm font-semibold text-black dark:text-white">
+                      Reset your password
+                    </div>
+                    <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-snug">
+                      Enter your account email and we&apos;ll send a reset link and 6-digit code.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-medium text-black dark:text-white block">Email</label>
+                    <div className="relative">
+                      <Mail className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="email"
+                        required
+                        value={authEmail}
+                        onChange={(e) => setAuthEmail(e.target.value)}
+                        placeholder="nervep2p@gmail.com"
+                        className="w-full pl-8 pr-2.5 py-2 rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isSubmittingAuth}
+                    className="w-full py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-semibold cursor-pointer"
+                  >
+                    {isSubmittingAuth ? 'Sending Reset...' : 'Send Password Reset'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthModalMode('signin');
+                      setAuthError('');
+                      setDispatchedNotice('');
+                    }}
+                    className="w-full py-1 text-center text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                  >
+                    ← Back to Sign In
+                  </button>
+                </form>
+              ) : (
+                /* FORGOT PASSWORD STEP 2: Verify 6-Digit Reset Code & Set New Password */
+                <form onSubmit={handleConfirmPasswordReset} className="space-y-2.5 text-xs">
+                  {dispatchedNotice && (
+                    <div className="p-2.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-black dark:text-white text-[11px] leading-snug flex items-start justify-between gap-2">
+                      <span>{dispatchedNotice}</span>
+                      <button
+                        type="button"
+                        onClick={() => setDispatchedNotice('')}
+                        aria-label="Dismiss notification"
+                        className="p-0.5 shrink-0 text-current cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <label className="font-medium text-black dark:text-white block">
+                      6-Digit Reset Code
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={6}
+                      value={resetCodeInput}
+                      onChange={(e) => setResetCodeInput(e.target.value)}
+                      placeholder="123456"
+                      className="w-full px-3 py-2 text-center tracking-widest text-sm font-mono font-bold rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-medium text-black dark:text-white block">
+                      New Password
+                    </label>
+                    <div className="relative">
+                      <KeyRound className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        value={resetNewPassword}
+                        onChange={(e) => setResetNewPassword(e.target.value)}
+                        placeholder="Min 6 characters"
+                        className="w-full pl-8 pr-2.5 py-2 rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="font-medium text-black dark:text-white block">
+                      Confirm New Password
+                    </label>
+                    <div className="relative">
+                      <KeyRound className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        value={resetConfirmPassword}
+                        onChange={(e) => setResetConfirmPassword(e.target.value)}
+                        placeholder="Re-enter new password"
+                        className="w-full pl-8 pr-2.5 py-2 rounded-lg border border-neutral-300 dark:border-neutral-800 bg-white dark:bg-black text-black dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isSubmittingAuth}
+                    className="w-full py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>{isSubmittingAuth ? 'Updating...' : 'Update Password'}</span>
+                  </button>
+
+                  <div className="flex items-center justify-between pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForgotPasswordStep('request');
+                        setAuthError('');
+                      }}
+                      className="text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                    >
+                      ← Resend / change email
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthModalMode('signin');
+                        setForgotPasswordStep('request');
+                        setAuthError('');
+                        setDispatchedNotice('');
+                      }}
+                      className="text-blue-600 dark:text-blue-400 hover:underline font-medium cursor-pointer"
+                    >
+                      Back to Sign In
+                    </button>
+                  </div>
+                </form>
+              )
             ) : signUpStep === 'credentials' ? (
               /* SIGN UP STEP 1: Email, Password & Delivery Channel (Email Code or SMS Text) */
               <form onSubmit={handleRequestSignUpActivationCode} className="space-y-2.5 text-xs">
@@ -8185,8 +10484,16 @@ export default function App() {
               /* SIGN UP STEP 2: Verify 6-Digit Activation Code to Activate Sign-In Request */
               <form onSubmit={handleVerifySignUpActivationCode} className="space-y-2.5 text-xs">
                 {dispatchedNotice && (
-                  <div className="p-2.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-black dark:text-white font-mono text-[11px]">
-                    {dispatchedNotice}
+                  <div className="p-2.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-black dark:text-white font-mono text-[11px] flex items-start justify-between gap-2">
+                    <span>{dispatchedNotice}</span>
+                    <button
+                      type="button"
+                      onClick={() => setDispatchedNotice('')}
+                      aria-label="Dismiss notification"
+                      className="p-0.5 shrink-0 text-current cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 )}
 
@@ -8225,8 +10532,16 @@ export default function App() {
             )}
 
             {authError && (
-              <div className="p-2.5 rounded-lg border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-300 text-xs">
-                {authError}
+              <div className="p-2.5 rounded-lg border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-300 text-xs flex items-start justify-between gap-2">
+                <span>{authError}</span>
+                <button
+                  type="button"
+                  onClick={() => setAuthError('')}
+                  aria-label="Dismiss warning"
+                  className="p-0.5 shrink-0 text-current cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
             )}
 
@@ -8317,6 +10632,133 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* =====================================================================
+          SAVED DRAFTS MODAL (Full visibility via Portal, works from sidebar & chat)
+      ===================================================================== */}
+      {showDraftsMenu &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50 backdrop-blur-[1px] p-4"
+            onClick={() => setShowDraftsMenu(false)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Saved Drafts"
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg max-h-[82vh] flex flex-col rounded-xl border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#161b22] shadow-2xl overflow-hidden"
+            >
+              <div className="px-4 py-3 border-b border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] flex items-center justify-between gap-2 shrink-0">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  <span className="text-sm font-semibold text-[#1f2328] dark:text-[#e6edf3]">
+                    Saved Drafts ({chatDrafts.length})
+                  </span>
+                </div>
+                <div className="flex items-center gap-2.5">
+                  {chatDrafts.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setChatDrafts([])}
+                      className="text-xs font-medium text-red-600 dark:text-red-400 hover:underline cursor-pointer"
+                    >
+                      Clear all
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowDraftsMenu(false)}
+                    aria-label="Close drafts menu"
+                    className="p-1 rounded-md text-[#656d76] hover:text-[#1f2328] dark:hover:text-[#e6edf3] hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto divide-y divide-[#d0d7de] dark:divide-[#30363d]">
+                {chatDrafts.length === 0 ? (
+                  <div className="p-8 text-center text-xs sm:text-sm text-[#656d76] dark:text-[#8b949e]">
+                    No saved drafts. Entries automatically move here when you close the tab or chatbox.
+                  </div>
+                ) : (
+                  chatDrafts.map((draft) => (
+                    <div key={draft.id} className="p-4 space-y-2.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-sm text-[#1f2328] dark:text-[#e6edf3] flex items-center gap-1.5 min-w-0">
+                          {draft.isShark ? (
+                            <PenLine className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                          ) : (
+                            <MessageSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                          )}
+                          <span className="truncate">{draft.channelLabel}</span>
+                          {draft.messages.length > 0 && (
+                            <span className="text-[11px] font-mono font-normal text-[#656d76] dark:text-[#8b949e] shrink-0">
+                              · {draft.messages.length} entr
+                              {draft.messages.length === 1 ? 'y' : 'ies'}
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[11px] font-mono text-[#656d76] dark:text-[#8b949e] shrink-0">
+                          {draft.savedAt}
+                        </span>
+                      </div>
+
+                      {draft.messages.length > 0 && (
+                        <div className="space-y-1.5 max-h-44 overflow-y-auto rounded-md border border-[#d0d7de] dark:border-[#30363d] bg-[#f6f8fa] dark:bg-[#0d1117] p-2.5">
+                          {draft.messages.map((entry, idx) => (
+                            <div
+                              key={entry.id || `${draft.id}-m-${idx}`}
+                              className="text-xs leading-relaxed text-[#1f2328] dark:text-[#e6edf3]"
+                            >
+                              <span className="font-semibold text-[#656d76] dark:text-[#8b949e] mr-1.5">
+                                {entry.senderRole === 'copilot'
+                                  ? 'Nerve Shark:'
+                                  : entry.senderRole === 'self'
+                                  ? 'You:'
+                                  : `@${entry.senderHandle}:`}
+                              </span>
+                              <span className="whitespace-pre-wrap break-words">{entry.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {draft.unsentText && (
+                        <div className="rounded-md border border-blue-500/30 bg-blue-50/50 dark:bg-blue-950/30 px-2.5 py-2 text-xs text-[#1f2328] dark:text-[#e6edf3] whitespace-pre-wrap break-words">
+                          <span className="font-semibold text-blue-600 dark:text-blue-400 mr-1.5">
+                            Unsent draft:
+                          </span>
+                          {draft.unsentText}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-end gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDraft(draft.id)}
+                          className="px-2.5 py-1 rounded-md text-xs font-medium text-[#656d76] hover:text-red-600 dark:hover:text-red-400 border border-[#d0d7de] dark:border-[#30363d] bg-white dark:bg-[#21262d] cursor-pointer"
+                        >
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRestoreDraft(draft)}
+                          className="px-3 py-1 rounded-md text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 cursor-pointer"
+                        >
+                          Resume
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* =====================================================================
           COMPACT REPORT BUG MODAL (Minimal spacing for Mobile & Desktop)
@@ -8455,7 +10897,8 @@ export default function App() {
                   onClick={() =>
                     setCiFailureToasts((prev) => prev.filter((t) => t.id !== toast.id))
                   }
-                  className="p-0.5 rounded text-neutral-500 hover:text-black dark:hover:text-white cursor-pointer"
+                  aria-label="Dismiss notification"
+                  className="p-0.5 shrink-0 text-current cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -8505,6 +10948,17 @@ export default function App() {
         onClose={() => setShowConnectedUsersModal(false)}
         onSelectUser={handleSelectConnectedUser}
         onConnectGitHub={handleGitHubOAuthSignIn}
+      />
+
+      {/* Modal: GitHub-Style User Profile Setup (Avatar, Pull from GitHub, Manual Edit, Logout) */}
+      <UserProfileModal
+        isOpen={showProfileModal && isAuthenticated}
+        onClose={() => setShowProfileModal(false)}
+        profile={effectiveUserProfile}
+        email={activeSignedInEmail}
+        currentUser={currentUser}
+        onSaveProfile={handleSaveUserProfile}
+        onLogout={handleSignOutAll}
       />
 
       {/* Quiet Legal Site Footer */}
